@@ -33,7 +33,7 @@ const EDGES = [
     { id: "B-H", from: "B", to: "H", cap: 20 },
     { id: "H-B", from: "H", to: "B", cap: 20 },
     { id: "A-E", from: "A", to: "E", cap: 10 },
-    { id: "E-A", from: "E", to: "F", cap: 10 },
+    { id: "E-A", from: "E", to: "A", cap: 10 },
     { id: "F-E", from: "F", to: "E", cap: 10 },
     { id: "A-F", from: "A", to: "F", cap: 15 },
     { id: "F-A", from: "F", to: "A", cap: 15 },
@@ -135,6 +135,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     setupEventListeners();
     connectWebSocket();
     startSimulationLoop();
+
+    // AI IoT Real-Time Monitoring Loop
+    setInterval(() => {
+        if (typeof iotToggle !== 'undefined' && iotToggle && iotToggle.checked) {
+            triggerIoTReRoute(false);
+        }
+    }, 1000);
 });
 
 function setupEventListeners() {
@@ -205,6 +212,15 @@ function setupEventListeners() {
             }
         });
     }
+
+    // IoT Toggle Listener
+    if (typeof iotToggle !== 'undefined' && iotToggle) {
+        iotToggle.addEventListener("change", (e) => {
+            if (e.target.checked) {
+                triggerIoTReRoute(true); // Force immediate AI optimization sweep
+            }
+        });
+    }
 }
 
 // Mapbox Setup
@@ -264,6 +280,20 @@ async function initMap() {
 
         drawStreetNetwork();
     });
+
+    map.on('click', () => {
+        if (followedVehicleId) {
+            followedVehicleId = null;
+            clearRouteHighlight();
+            map.easeTo({
+                center: [23.7310, 37.9760],
+                zoom: 14.2,
+                pitch: 50,
+                bearing: -10,
+                duration: 1000
+            });
+        }
+    });
 }
 
 // Draw Athens Graph Edges
@@ -303,7 +333,8 @@ function drawStreetNetwork() {
                 ["get", "load"],
                 0, "#10b981", // Green
                 3, "#f59e0b", // Orange
-                8, "#ef4444"  // Red
+                8, "#ef4444", // Red
+                100, "#a855f7" // IoT Neon Purple Alert
             ],
             "line-width": 4,
             "line-opacity": 0.5
@@ -342,16 +373,97 @@ function drawStreetNetwork() {
     });
 }
 
+function drawRouteHighlight(vehicleId) {
+    if (!map) return;
+    if (!vehicleId || !localVehicles[vehicleId] || !localVehicles[vehicleId].path || localVehicles[vehicleId].path.length === 0) {
+        clearRouteHighlight();
+        return;
+    }
+
+    const v = localVehicles[vehicleId];
+    const coordinates = [];
+    
+    coordinates.push([v.lng, v.lat]);
+
+    const currentEdgeId = v.path[v.pathIndex];
+    const currentEdge = EDGES.find(e => e.id === currentEdgeId);
+    if (currentEdge) {
+        coordinates.push(NODES[currentEdge.to].coords);
+    }
+
+    for (let i = v.pathIndex + 1; i < v.path.length; i++) {
+        const edgeId = v.path[i];
+        const geom = roadGeometries[edgeId];
+        if (geom) {
+            coordinates.push(...geom);
+        } else {
+            const edge = EDGES.find(e => e.id === edgeId);
+            if (edge) {
+                coordinates.push(NODES[edge.from].coords);
+                coordinates.push(NODES[edge.to].coords);
+            }
+        }
+    }
+
+    const geojson = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+            "type": "LineString",
+            "coordinates": coordinates
+        }
+    };
+
+    let lineColor = "#00ffff"; // Default cyan for Swarm
+    if (v.type === 2) lineColor = "#ff0055"; // Emergency
+    else if (v.type === 1) lineColor = "#0055ff"; // Fleet
+    else if (v.selfish) lineColor = "#888888"; // Selfish
+
+    if (map.getSource('highlight-route')) {
+        map.getSource('highlight-route').setData(geojson);
+        map.setPaintProperty('highlight-route-line', 'line-color', lineColor);
+        map.setPaintProperty('highlight-route-glow', 'line-color', lineColor);
+    } else {
+        map.addSource('highlight-route', { "type": "geojson", "data": geojson });
+        
+        map.addLayer({
+            "id": "highlight-route-glow",
+            "type": "line",
+            "source": "highlight-route",
+            "layout": { "line-join": "round", "line-cap": "round" },
+            "paint": { "line-color": lineColor, "line-width": 8, "line-opacity": 0.4, "line-blur": 4 }
+        });
+        
+        map.addLayer({
+            "id": "highlight-route-line",
+            "type": "line",
+            "source": "highlight-route",
+            "layout": { "line-join": "round", "line-cap": "round" },
+            "paint": { "line-color": lineColor, "line-width": 4, "line-opacity": 1.0 }
+        });
+    }
+}
+
+function clearRouteHighlight() {
+    if (map && map.getSource('highlight-route')) {
+        map.getSource('highlight-route').setData({
+            "type": "FeatureCollection",
+            "features": []
+        });
+    }
+}
+
 function clearSimulation() {
     // Tell backend to remove all vehicles
-    Object.keys(localVehicles).forEach(id => {
+    Object.keys(markers).forEach(id => {
         if (socket && socket.readyState === WebSocket.OPEN) {
+            const pos = markers[id].getLngLat();
             socket.send(JSON.stringify({
                 type: "update_position",
                 payload: {
                     vehicle_id: id,
-                    lat: localVehicles[id].lat,
-                    lng: localVehicles[id].lng,
+                    lat: pos.lat,
+                    lng: pos.lng,
                     current_edge: "finished"
                 }
             }));
@@ -364,8 +476,233 @@ function clearSimulation() {
         delete markers[id];
     });
     totalKarma = 0;
+    if (typeof statFlowPoints !== 'undefined' && statFlowPoints) statFlowPoints.textContent = "0";
+    if (typeof statActiveCount !== 'undefined' && statActiveCount) statActiveCount.textContent = "0";
+    if (typeof statAvgTime !== 'undefined' && statAvgTime) statAvgTime.textContent = "0.0s";
+    if (typeof statCongestionPct !== 'undefined' && statCongestionPct) statCongestionPct.textContent = "0%";
+    if (typeof statCongestionFill !== 'undefined' && statCongestionFill) statCongestionFill.style.width = "0%";
     followedVehicleId = null;
+    clearRouteHighlight();
     updateMapEdgeLoads([]);
+}
+
+// Spawning Vehicles Logic
+function spawnCivilian() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    const id = "c_" + Math.random().toString(36).substr(2, 6);
+    const nodeIDs = Object.keys(NODES);
+    const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    while (dest === origin) {
+        dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    }
+
+    const isSelfish = Math.random() * 100 > currentAdoptionRate;
+
+    localVehicles[id] = {
+        id: id,
+        origin: origin,
+        destination: dest,
+        type: 0, // Civilian
+        selfish: isSelfish,
+        path: [],
+        pathIndex: 0,
+        progress: 0,
+        lat: NODES[origin].coords[1],
+        lng: NODES[origin].coords[0],
+        spawnTime: Date.now()
+    };
+
+    socket.send(JSON.stringify({
+        type: "register_vehicle",
+        payload: {
+            id: id,
+            type: 0,
+            origin: origin,
+            destination: dest,
+            current_edge: "",
+            lat: NODES[origin].coords[1],
+            lng: NODES[origin].coords[0]
+        }
+    }));
+
+    socket.send(JSON.stringify({
+        type: "route_request",
+        payload: {
+            vehicle_id: id,
+            origin: origin,
+            destination: dest,
+            type: 0,
+            selfish: isSelfish,
+            emergency: false,
+            fleet_id: ""
+        }
+    }));
+}
+
+function spawnFleet() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    const fleetID = "fleet_athens_" + Math.random().toString(36).substr(2, 4);
+    const nodeIDs = Object.keys(NODES);
+    
+    for (let idx = 0; idx < 3; idx++) {
+        if (Object.keys(localVehicles).length >= 250) break;
+        const id = `f_${fleetID}_${idx}`;
+        const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        while (dest === origin) {
+            dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        }
+
+        localVehicles[id] = {
+            id: id,
+            origin: origin,
+            destination: dest,
+            type: 1, // Delivery
+            selfish: false,
+            fleet_id: fleetID,
+            path: [],
+            pathIndex: 0,
+            progress: 0,
+            lat: NODES[origin].coords[1],
+            lng: NODES[origin].coords[0],
+            spawnTime: Date.now()
+        };
+
+        socket.send(JSON.stringify({
+            type: "register_vehicle",
+            payload: {
+                id: id,
+                type: 1,
+                origin: origin,
+                destination: dest,
+                current_edge: "",
+                fleet_id: fleetID,
+                lat: NODES[origin].coords[1],
+                lng: NODES[origin].coords[0]
+            }
+        }));
+
+        socket.send(JSON.stringify({
+            type: "route_request",
+            payload: {
+                vehicle_id: id,
+                origin: origin,
+                destination: dest,
+                type: 1,
+                selfish: false,
+                emergency: false,
+                fleet_id: fleetID
+            }
+        }));
+    }
+}
+
+function spawnEmergency() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    const id = "e_" + Math.random().toString(36).substr(2, 6);
+    const nodeIDs = Object.keys(NODES);
+    const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    while (dest === origin) {
+        dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    }
+
+    localVehicles[id] = {
+        id: id,
+        origin: origin,
+        destination: dest,
+        type: 2, // Emergency
+        selfish: false,
+        path: [],
+        pathIndex: 0,
+        progress: 0,
+        lat: NODES[origin].coords[1],
+        lng: NODES[origin].coords[0],
+        spawnTime: Date.now()
+    };
+
+    socket.send(JSON.stringify({
+        type: "register_vehicle",
+        payload: {
+            id: id,
+            type: 2,
+            origin: origin,
+            destination: dest,
+            current_edge: "",
+            lat: NODES[origin].coords[1],
+            lng: NODES[origin].coords[0]
+        }
+    }));
+
+    socket.send(JSON.stringify({
+        type: "route_request",
+        payload: {
+            vehicle_id: id,
+            origin: origin,
+            destination: dest,
+            type: 2,
+            selfish: false,
+            emergency: true,
+            fleet_id: ""
+        }
+    }));
+
+    triggerIoTReRoute(true);
+}
+
+function handleRouteResponse(resp) {
+    const v = localVehicles[resp.vehicle_id];
+    if (!v) return;
+
+    if (v.pendingReroute) {
+        v.pendingReroute = false;
+        const currentEdgeId = v.path[v.pathIndex];
+        v.path = [currentEdgeId, ...resp.path.edges];
+        v.pathIndex = 0;
+    } else {
+        v.path = resp.path.edges;
+        v.pathIndex = 0;
+        v.progress = 0;
+    }
+
+    if (resp.flow_points_earned > 0) {
+        totalKarma += resp.flow_points_earned;
+        if (typeof statFlowPoints !== 'undefined' && statFlowPoints) {
+            statFlowPoints.textContent = totalKarma;
+        }
+    }
+    
+    calculateAvgTime();
+}
+
+// Auto-Spawning Control Loop
+function startAutoSpawn() {
+    if (autoSpawnInterval) clearInterval(autoSpawnInterval);
+    spawnMultipleCiviliansAndFleets(3);
+    autoSpawnInterval = setInterval(() => {
+        spawnMultipleCiviliansAndFleets(3);
+    }, 3000);
+}
+
+function stopAutoSpawn() {
+    if (autoSpawnInterval) {
+        clearInterval(autoSpawnInterval);
+        autoSpawnInterval = null;
+    }
+}
+
+function spawnMultipleCiviliansAndFleets(count) {
+    for (let i = 0; i < count; i++) {
+        if (Math.random() > 0.2) spawnCivilian(); // 80% chance civilian
+        else spawnFleet();                        // 20% chance fleet van
+    }
 }
 
 // WebSocket Connection
@@ -450,6 +787,7 @@ function updateVehicleMarkers(positions) {
                 e.stopPropagation();
                 if (followedVehicleId === pos.id) {
                     followedVehicleId = null;
+                clearRouteHighlight();
                     if (map) {
                         map.easeTo({
                             center: [23.7310, 37.9760],
@@ -461,6 +799,7 @@ function updateVehicleMarkers(positions) {
                     }
                 } else {
                     followedVehicleId = pos.id;
+                drawRouteHighlight(pos.id);
                 }
             });
                 
@@ -480,7 +819,9 @@ function updateVehicleMarkers(positions) {
     });
 
     // Update statistics dashboard
-    statActiveCount.textContent = positions.length;
+    if (typeof statActiveCount !== 'undefined' && statActiveCount) {
+        statActiveCount.textContent = positions.length;
+    }
     
     // Update map edge congestion visual layer based on vehicle positions
     updateMapEdgeLoads(positions);
@@ -506,9 +847,16 @@ function updateMapEdgeLoads(positions) {
     });
 
     // Update map street layers
+    const isIoTEnabled = typeof iotToggle !== 'undefined' && iotToggle && iotToggle.checked;
+
     const features = EDGES.map(edge => {
         const coords = roadGeometries[edge.id] || [NODES[edge.from].coords, NODES[edge.to].coords];
-        const load = currentEdgeLoads[edge.id] || 0;
+        let load = currentEdgeLoads[edge.id] || 0;
+        
+        if (isIoTEnabled && edge.cap > 0 && load / edge.cap >= 0.6) {
+            load = 100; // Trigger IoT Neon Purple Alert styling
+        }
+
         return {
             "type": "Feature",
             "properties": { "id": edge.id, "load": load },
@@ -535,26 +883,28 @@ function updateMapEdgeLoads(positions) {
 
     const congestionRatio = totalCap > 0 ? (totalLoad / totalCap) * 100 : 0;
     const finalCongestion = Math.min(100, Math.round(congestionRatio * 3.5)); // scale factor for visual impact
-    statCongestionPct.textContent = finalCongestion + "%";
-    statCongestionFill.style.width = finalCongestion + "%";
+    if (typeof statCongestionPct !== 'undefined' && statCongestionPct) statCongestionPct.textContent = finalCongestion + "%";
+    if (typeof statCongestionFill !== 'undefined' && statCongestionFill) statCongestionFill.style.width = finalCongestion + "%";
     
     // Color thresholds
-    statCongestionFill.className = "progress-fill";
-    if (finalCongestion < 25) {
-        statCongestionFill.classList.add("green");
-        statCongestionPct.className = "stat-value text-green";
-    } else if (finalCongestion < 60) {
-        statCongestionFill.classList.add("orange");
-        statCongestionPct.className = "stat-value text-orange";
-    } else {
-        statCongestionFill.classList.add("red");
-        statCongestionPct.className = "stat-value text-red";
+    if (typeof statCongestionFill !== 'undefined' && statCongestionFill) {
+        statCongestionFill.className = "progress-fill";
+        if (finalCongestion < 25) {
+            statCongestionFill.classList.add("green");
+            if (statCongestionPct) statCongestionPct.className = "stat-value text-green";
+        } else if (finalCongestion < 60) {
+            statCongestionFill.classList.add("orange");
+            if (statCongestionPct) statCongestionPct.className = "stat-value text-orange";
+        } else {
+            statCongestionFill.classList.add("red");
+            if (statCongestionPct) statCongestionPct.className = "stat-value text-red";
+        }
     }
 }
 
 // Spawning Vehicles Logic
 function spawnCivilian() {
-    if (Object.keys(localVehicles).length >= 250) return;
+    if (Object.keys(localVehicles).length >= 100) return;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const id = "c_" + Math.random().toString(36).substr(2, 6);
@@ -612,14 +962,14 @@ function spawnCivilian() {
 }
 
 function spawnFleet() {
-    if (Object.keys(localVehicles).length >= 250) return;
+    if (Object.keys(localVehicles).length >= 100) return;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const fleetID = "fleet_athens_" + Math.random().toString(36).substr(2, 4);
     const nodeIDs = Object.keys(NODES);
     
     for (let idx = 0; idx < 3; idx++) {
-        if (Object.keys(localVehicles).length >= 250) break;
+        if (Object.keys(localVehicles).length >= 100) break;
         const id = `f_${fleetID}_${idx}`;
         const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
         let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
@@ -671,7 +1021,7 @@ function spawnFleet() {
 }
 
 function spawnEmergency() {
-    if (Object.keys(localVehicles).length >= 250) return;
+    if (Object.keys(localVehicles).length >= 100) return;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const id = "e_" + Math.random().toString(36).substr(2, 6);
@@ -764,40 +1114,62 @@ function showFloatingPointsText(pts) {
 }
 
 function triggerIoTReRoute(force = false) {
-    if (!force) {
-        if (typeof iotToggle !== 'undefined' && iotToggle && !iotToggle.checked) return;
+    let isIoTEnabled = false;
+    if (typeof iotToggle !== 'undefined' && iotToggle) {
+        isIoTEnabled = iotToggle.checked;
     }
+    
+    if (!force && !isIoTEnabled) return;
 
-    let needsReroute = force;
-    if (!needsReroute) {
-        EDGES.forEach(edge => {
-            const load = currentEdgeLoads[edge.id] || 0;
-            if (edge.cap > 0 && load / edge.cap >= 0.8) {
-                needsReroute = true;
-            }
-        });
-    }
+    // IoT sensors detect congestion faster (60% instead of 80%)
+    const threshold = isIoTEnabled ? 0.6 : 0.8;
 
-    if (needsReroute) {
+    let congestedEdges = new Set();
+    EDGES.forEach(edge => {
+        const load = currentEdgeLoads[edge.id] || 0;
+        if (edge.cap > 0 && load / edge.cap >= threshold) {
+            congestedEdges.add(edge.id);
+        }
+    });
+
+    if (congestedEdges.size > 0 || force) {
+        const now = Date.now();
         Object.keys(localVehicles).forEach(id => {
             const v = localVehicles[id];
+            if (v.pendingReroute) return;
+            if (v.lastRerouteTime && now - v.lastRerouteTime < 3000) return; // 3 second cooldown
+
             if ((v.type === 0 || v.type === 1) && v.path && v.pathIndex < v.path.length) {
-                const currentEdgeId = v.path[v.pathIndex];
-                const edge = EDGES.find(e => e.id === currentEdgeId);
-                if (edge) {
-                    v.pendingReroute = true;
-                    socket.send(JSON.stringify({
-                        type: "route_request",
-                        payload: {
-                            vehicle_id: v.id,
-                            origin: edge.to,
-                            destination: v.destination,
-                            type: v.type,
-                            selfish: v.selfish,
-                            emergency: false,
-                            fleet_id: v.fleet_id || ""
+                let crossesCongestion = force;
+                if (!crossesCongestion) {
+                    // Check if the remaining path intersects with any congested edges
+                    for (let i = v.pathIndex + 1; i < v.path.length; i++) {
+                        if (congestedEdges.has(v.path[i])) {
+                            crossesCongestion = true;
+                            break;
                         }
-                    }));
+                    }
+                }
+
+                if (crossesCongestion) {
+                    const currentEdgeId = v.path[v.pathIndex];
+                    const edge = EDGES.find(e => e.id === currentEdgeId);
+                    if (edge) {
+                        v.pendingReroute = true;
+                        v.lastRerouteTime = now;
+                        socket.send(JSON.stringify({
+                            type: "route_request",
+                            payload: {
+                                vehicle_id: v.id,
+                                origin: edge.to,
+                                destination: v.destination,
+                                type: v.type,
+                                selfish: v.selfish,
+                                emergency: false,
+                                fleet_id: v.fleet_id || ""
+                            }
+                        }));
+                    }
                 }
             }
         });
@@ -1050,6 +1422,7 @@ function startSimulationLoop() {
                     }));
                     if (v.id === followedVehicleId) {
                         followedVehicleId = null;
+                    clearRouteHighlight();
                         if (map) {
                             map.easeTo({
                                 center: [23.7310, 37.9760],
@@ -1099,6 +1472,7 @@ function startSimulationLoop() {
                     pitch: dynamicPitch,
                     bearing: edgeBearing
                 });
+                drawRouteHighlight(v.id);
             }
         });
     }

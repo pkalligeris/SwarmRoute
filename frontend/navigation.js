@@ -156,6 +156,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     setupEventListeners();
     connectWebSocket();
     startSimulationLoop();
+
+    // AI IoT Real-Time Monitoring Loop
+    setInterval(() => {
+        const iotToggle = document.getElementById("iot-toggle");
+        if (iotToggle && iotToggle.checked) {
+            triggerIoTReRoute(false);
+        }
+    }, 1000);
 });
 
 function setupEventListeners() {
@@ -211,6 +219,16 @@ function setupEventListeners() {
             btnContainer.appendChild(btn);
         });
         adoptionSlider.parentElement.replaceChild(btnContainer, adoptionSlider);
+    }
+
+    // IoT Toggle Listener
+    const iotToggle = document.getElementById("iot-toggle");
+    if (iotToggle) {
+        iotToggle.addEventListener("change", (e) => {
+            if (e.target.checked) {
+                triggerIoTReRoute(true); // Force immediate AI optimization sweep
+            }
+        });
     }
 }
 
@@ -271,6 +289,20 @@ async function initMap() {
 
         drawStreetNetwork();
     });
+
+    map.on('click', () => {
+        if (followedVehicleId) {
+            followedVehicleId = null;
+            clearRouteHighlight();
+            map.easeTo({
+                center: [23.7310, 37.9760],
+                zoom: 14.2,
+                pitch: 50,
+                bearing: -10,
+                duration: 1000
+            });
+        }
+    });
 }
 
 // Draw Athens Graph Edges
@@ -310,7 +342,8 @@ function drawStreetNetwork() {
                 ["get", "load"],
                 0, "#10b981", // Green
                 3, "#f59e0b", // Orange
-                8, "#ef4444"  // Red
+                8, "#ef4444", // Red
+                100, "#a855f7" // IoT Neon Purple Alert
             ],
             "line-width": 4,
             "line-opacity": 0.5 // Dimmer ambient street loads to emphasize navigation path
@@ -347,6 +380,86 @@ function drawStreetNetwork() {
             "circle-opacity": 0.8
         }
     });
+}
+
+function drawRouteHighlight(vehicleId) {
+    if (!map) return;
+    if (!vehicleId || !localVehicles[vehicleId] || !localVehicles[vehicleId].path || localVehicles[vehicleId].path.length === 0) {
+        clearRouteHighlight();
+        return;
+    }
+
+    const v = localVehicles[vehicleId];
+    const coordinates = [];
+    
+    coordinates.push([v.lng, v.lat]);
+
+    const currentEdgeId = v.path[v.pathIndex];
+    const currentEdge = EDGES.find(e => e.id === currentEdgeId);
+    if (currentEdge) {
+        coordinates.push(NODES[currentEdge.to].coords);
+    }
+
+    for (let i = v.pathIndex + 1; i < v.path.length; i++) {
+        const edgeId = v.path[i];
+        const geom = roadGeometries[edgeId];
+        if (geom) {
+            coordinates.push(...geom);
+        } else {
+            const edge = EDGES.find(e => e.id === edgeId);
+            if (edge) {
+                coordinates.push(NODES[edge.from].coords);
+                coordinates.push(NODES[edge.to].coords);
+            }
+        }
+    }
+
+    const geojson = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+            "type": "LineString",
+            "coordinates": coordinates
+        }
+    };
+
+    let lineColor = "#00ffff"; // Default cyan for Swarm
+    if (v.type === 2) lineColor = "#ff0055"; // Emergency
+    else if (v.type === 1) lineColor = "#0055ff"; // Fleet
+    else if (v.selfish) lineColor = "#888888"; // Selfish
+
+    if (map.getSource('highlight-route')) {
+        map.getSource('highlight-route').setData(geojson);
+        map.setPaintProperty('highlight-route-line', 'line-color', lineColor);
+        map.setPaintProperty('highlight-route-glow', 'line-color', lineColor);
+    } else {
+        map.addSource('highlight-route', { "type": "geojson", "data": geojson });
+        
+        map.addLayer({
+            "id": "highlight-route-glow",
+            "type": "line",
+            "source": "highlight-route",
+            "layout": { "line-join": "round", "line-cap": "round" },
+            "paint": { "line-color": lineColor, "line-width": 8, "line-opacity": 0.4, "line-blur": 4 }
+        });
+        
+        map.addLayer({
+            "id": "highlight-route-line",
+            "type": "line",
+            "source": "highlight-route",
+            "layout": { "line-join": "round", "line-cap": "round" },
+            "paint": { "line-color": lineColor, "line-width": 4, "line-opacity": 1.0 }
+        });
+    }
+}
+
+function clearRouteHighlight() {
+    if (map && map.getSource('highlight-route')) {
+        map.getSource('highlight-route').setData({
+            "type": "FeatureCollection",
+            "features": []
+        });
+    }
 }
 
 // WebSocket Connection
@@ -415,6 +528,7 @@ function updateVehicleMarkers(positions) {
                 e.stopPropagation();
                 if (followedVehicleId === pos.id) {
                     followedVehicleId = null;
+                clearRouteHighlight();
                     if (map) {
                         map.easeTo({
                             center: [23.7310, 37.9760],
@@ -426,6 +540,7 @@ function updateVehicleMarkers(positions) {
                     }
                 } else {
                     followedVehicleId = pos.id;
+                drawRouteHighlight(pos.id);
                 }
             });
                 
@@ -498,41 +613,60 @@ function handleRouteResponse(resp) {
 }
 
 function triggerIoTReRoute(force = false) {
-    if (!force) {
-        const iotToggle = document.getElementById("iot-toggle");
-        if (iotToggle && !iotToggle.checked) return;
-    }
+    const iotToggle = document.getElementById("iot-toggle");
+    const isIoTEnabled = iotToggle && iotToggle.checked;
 
-    let needsReroute = force;
-    if (!needsReroute) {
-        EDGES.forEach(edge => {
-            const load = currentEdgeLoads[edge.id] || 0;
-            if (edge.cap > 0 && load / edge.cap >= 0.8) {
-                needsReroute = true;
-            }
-        });
-    }
+    if (!force && !isIoTEnabled) return;
 
-    if (needsReroute) {
+    // IoT sensors detect congestion faster (60% instead of 80%)
+    const threshold = isIoTEnabled ? 0.6 : 0.8;
+
+    let congestedEdges = new Set();
+    EDGES.forEach(edge => {
+        const load = currentEdgeLoads[edge.id] || 0;
+        if (edge.cap > 0 && load / edge.cap >= threshold) {
+            congestedEdges.add(edge.id);
+        }
+    });
+
+    if (congestedEdges.size > 0 || force) {
+        const now = Date.now();
         Object.keys(localVehicles).forEach(id => {
             const v = localVehicles[id];
+            if (v.pendingReroute) return;
+            if (v.lastRerouteTime && now - v.lastRerouteTime < 3000) return; // 3 second cooldown
+
             if ((v.type === 0 || v.type === 1) && v.path && v.pathIndex < v.path.length) {
-                const currentEdgeId = v.path[v.pathIndex];
-                const edge = EDGES.find(e => e.id === currentEdgeId);
-                if (edge) {
-                    v.pendingReroute = true;
-                    socket.send(JSON.stringify({
-                        type: "route_request",
-                        payload: {
-                            vehicle_id: v.id,
-                            origin: edge.to,
-                            destination: v.destination,
-                            type: v.type,
-                            selfish: v.selfish,
-                            emergency: false,
-                            fleet_id: v.fleet_id || ""
+                let crossesCongestion = force;
+                if (!crossesCongestion) {
+                    // Check if the remaining path intersects with any congested edges
+                    for (let i = v.pathIndex + 1; i < v.path.length; i++) {
+                        if (congestedEdges.has(v.path[i])) {
+                            crossesCongestion = true;
+                            break;
                         }
-                    }));
+                    }
+                }
+
+                if (crossesCongestion) {
+                    const currentEdgeId = v.path[v.pathIndex];
+                    const edge = EDGES.find(e => e.id === currentEdgeId);
+                    if (edge) {
+                        v.pendingReroute = true;
+                        v.lastRerouteTime = now;
+                        socket.send(JSON.stringify({
+                            type: "route_request",
+                            payload: {
+                                vehicle_id: v.id,
+                                origin: edge.to,
+                                destination: v.destination,
+                                type: v.type,
+                                selfish: v.selfish,
+                                emergency: false,
+                                fleet_id: v.fleet_id || ""
+                            }
+                        }));
+                    }
                 }
             }
         });
@@ -624,9 +758,8 @@ function startSimulationLoop() {
                 speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
             }
             
-            if (typeof adoptionSlider !== 'undefined' && adoptionSlider) {
-                const adoptionRate = parseInt(adoptionSlider.value) || 0;
-                speed *= (1.0 + (adoptionRate / 100.0));
+            if (currentAdoptionRate > 0) {
+                speed *= (1.0 + (currentAdoptionRate / 100.0));
             }
             
             const edgeDistance = getEdgeDistance(currentEdgeId);
@@ -655,6 +788,7 @@ function startSimulationLoop() {
                     }));
                     if (v.id === followedVehicleId) {
                         followedVehicleId = null;
+                        clearRouteHighlight();
                         if (map) {
                             map.easeTo({
                                 center: [23.7310, 37.9760],
@@ -701,6 +835,7 @@ function startSimulationLoop() {
                     pitch: dynamicPitch,
                     bearing: edgeBearing
                 });
+                drawRouteHighlight(v.id);
             }
         });
     }
