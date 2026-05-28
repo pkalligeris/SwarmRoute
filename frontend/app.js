@@ -488,7 +488,7 @@ function clearSimulation() {
 
 // Spawning Vehicles Logic
 function spawnCivilian() {
-    if (Object.keys(localVehicles).length >= 250) return;
+    if (Object.keys(localVehicles).length >= 100) return;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const id = "c_" + Math.random().toString(36).substr(2, 6);
@@ -543,14 +543,14 @@ function spawnCivilian() {
 }
 
 function spawnFleet() {
-    if (Object.keys(localVehicles).length >= 250) return;
+    if (Object.keys(localVehicles).length >= 100) return;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const fleetID = "fleet_athens_" + Math.random().toString(36).substr(2, 4);
     const nodeIDs = Object.keys(NODES);
     
     for (let idx = 0; idx < 3; idx++) {
-        if (Object.keys(localVehicles).length >= 250) break;
+        if (Object.keys(localVehicles).length >= 100) break;
         const id = `f_${fleetID}_${idx}`;
         const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
         let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
@@ -603,7 +603,7 @@ function spawnFleet() {
 }
 
 function spawnEmergency() {
-    if (Object.keys(localVehicles).length >= 250) return;
+    if (Object.keys(localVehicles).length >= 100) return;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
     const id = "e_" + Math.random().toString(36).substr(2, 6);
