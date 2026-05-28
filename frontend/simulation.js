@@ -444,6 +444,8 @@ function handleSocketMessage(msg) {
 
 // Draw/Update Markers
 function updateVehicleMarkers(positions) {
+    if (!positions) return;
+    
     // Keep track of active IDs
     const activeIds = new Set();
 
@@ -848,7 +850,7 @@ function calculateAvgTime() {
     
     Object.values(localVehicles).forEach(v => {
         if (v.path.length > 0) {
-            sumTime += v.path.length * 45; // average 45s per segment
+            sumTime += getRealisticTime(v);
             count++;
         }
     });

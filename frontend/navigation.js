@@ -382,6 +382,8 @@ function handleSocketMessage(msg) {
 
 // Draw/Update Markers
 function updateVehicleMarkers(positions) {
+    if (!positions) return;
+    
     const activeIds = new Set();
 
     positions.forEach(pos => {

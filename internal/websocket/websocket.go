@@ -143,7 +143,8 @@ func (h *WSHandler) BroadcastTelemetry(ctx context.Context) error {
 		CurrentEdge types.EdgeID      `json:"current_edge"`
 	}
 
-	var positions []broadcastPos
+	// Initialize with length 0 to guarantee an empty JSON array `[]` instead of `null`
+	positions := make([]broadcastPos, 0, len(vehicles))
 	for _, v := range vehicles {
 		if v.CurrentEdge == "finished" {
 			continue

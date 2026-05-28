@@ -50,6 +50,7 @@ let markers = {}; // vehicle_id -> mapbox marker
 let localVehicles = {}; // vehicle_id -> vehicle simulation state
 let currentEdgeLoads = {}; // edge_id -> vehicle count
 let mapboxToken = localStorage.getItem("mapbox_token") || "";
+let roadGeometries = {};
 let totalKarma = 0;
 let currentAdoptionRate = 0;
 let autoSpawnInterval = null;
@@ -75,11 +76,58 @@ const modalToken = document.getElementById("modal-token-required");
 const modalTokenInput = document.getElementById("modal-token-input");
 const btnModalSave = document.getElementById("btn-modal-save");
 
+// Fetch and cache road geometries from Mapbox Directions API
+async function loadRoadGeometries() {
+    const cacheKey = "swarmroute_road_geometries";
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+        try {
+            roadGeometries = JSON.parse(cached);
+            const missing = EDGES.some(edge => !roadGeometries[edge.id]);
+            if (!missing) {
+                console.log("Loaded road geometries from cache");
+                return;
+            }
+        } catch (e) {
+            console.error("Error parsing cached road geometries", e);
+        }
+    }
+
+    console.log("Fetching road geometries from Mapbox...");
+    roadGeometries = {};
+    
+    const fetchPromises = EDGES.map(async (edge) => {
+        const fromNode = NODES[edge.from];
+        const toNode = NODES[edge.to];
+        const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${fromNode.coords[0]},${fromNode.coords[1]};${toNode.coords[0]},${toNode.coords[1]}?overview=full&geometries=geojson&access_token=${mapboxToken}`;
+        
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+            if (data.routes && data.routes.length > 0 && data.routes[0].geometry) {
+                roadGeometries[edge.id] = data.routes[0].geometry.coordinates;
+            } else {
+                roadGeometries[edge.id] = [fromNode.coords, toNode.coords];
+            }
+        } catch (error) {
+            console.error(`Failed to fetch geometry for edge ${edge.id}`, error);
+            roadGeometries[edge.id] = [fromNode.coords, toNode.coords];
+        }
+    });
+
+    await Promise.all(fetchPromises);
+    localStorage.setItem(cacheKey, JSON.stringify(roadGeometries));
+    console.log("Fetched and cached road geometries");
+}
+
 // Initialize application
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
     if (mapboxToken) {
         tokenInput.value = mapboxToken;
-        initMap();
+        await initMap();
     } else {
         modalToken.classList.remove("hidden");
     }
@@ -160,8 +208,9 @@ function setupEventListeners() {
 }
 
 // Mapbox Setup
-function initMap() {
+async function initMap() {
     mapboxgl.accessToken = mapboxToken;
+    await loadRoadGeometries();
     map = new mapboxgl.Map({
         container: 'map',
         style: 'mapbox://styles/mapbox/dark-v11',
@@ -220,14 +269,13 @@ function initMap() {
 // Draw Athens Graph Edges
 function drawStreetNetwork() {
     const features = EDGES.map(edge => {
-        const fromNode = NODES[edge.from];
-        const toNode = NODES[edge.to];
+        const coords = roadGeometries[edge.id] || [NODES[edge.from].coords, NODES[edge.to].coords];
         return {
             "type": "Feature",
             "properties": { "id": edge.id, "load": 0 },
             "geometry": {
                 "type": "LineString",
-                "coordinates": [fromNode.coords, toNode.coords]
+                "coordinates": coords
             }
         };
     });
@@ -253,12 +301,12 @@ function drawStreetNetwork() {
                 "interpolate",
                 ["linear"],
                 ["get", "load"],
-                0, "#10b981", // Green (free flow)
-                3, "#f59e0b", // Orange (moderate)
-                8, "#ef4444"  // Red (congested)
+                0, "#10b981", // Green
+                3, "#f59e0b", // Orange
+                8, "#ef4444"  // Red
             ],
             "line-width": 4,
-            "line-opacity": 0.75
+            "line-opacity": 0.5
         }
     });
 
@@ -354,6 +402,8 @@ function handleSocketMessage(msg) {
 
 // Draw/Update Markers
 function updateVehicleMarkers(positions) {
+    if (!positions) return;
+    
     // Keep track of active IDs
     const activeIds = new Set();
     let civilianCount = 0;
@@ -457,15 +507,14 @@ function updateMapEdgeLoads(positions) {
 
     // Update map street layers
     const features = EDGES.map(edge => {
-        const fromNode = NODES[edge.from];
-        const toNode = NODES[edge.to];
+        const coords = roadGeometries[edge.id] || [NODES[edge.from].coords, NODES[edge.to].coords];
         const load = currentEdgeLoads[edge.id] || 0;
         return {
             "type": "Feature",
             "properties": { "id": edge.id, "load": load },
             "geometry": {
                 "type": "LineString",
-                "coordinates": [fromNode.coords, toNode.coords]
+                "coordinates": coords
             }
         };
     });
@@ -755,8 +804,71 @@ function triggerIoTReRoute(force = false) {
     }
 }
 
+// Interpolate coordinates along a polyline based on progress (0 to 1)
+function interpolatePosition(coords, progress) {
+    if (!coords || coords.length === 0) return [0, 0];
+    if (coords.length === 1) return coords[0];
+    if (progress <= 0) return coords[0];
+    if (progress >= 1.0) return coords[coords.length - 1];
+
+    let totalLength = 0;
+    const lengths = [];
+    for (let i = 0; i < coords.length - 1; i++) {
+        const d = getDistance(coords[i], coords[i + 1]);
+        lengths.push(d);
+        totalLength += d;
+    }
+
+    if (totalLength === 0) return coords[0];
+
+    const targetLength = progress * totalLength;
+    let currentLength = 0;
+
+    for (let i = 0; i < coords.length - 1; i++) {
+        if (currentLength + lengths[i] >= targetLength) {
+            const segmentProgress = (targetLength - currentLength) / lengths[i];
+            const start = coords[i];
+            const end = coords[i + 1];
+            return [
+                start[0] + (end[0] - start[0]) * segmentProgress,
+                start[1] + (end[1] - start[1]) * segmentProgress
+            ];
+        }
+        currentLength += lengths[i];
+    }
+    return coords[coords.length - 1];
+}
+
+function getDistance(coords1, coords2) {
+    const R = 6371000; 
+    const lat1 = coords1[1] * Math.PI / 180;
+    const lat2 = coords2[1] * Math.PI / 180;
+    const dLat = (coords2[1] - coords1[1]) * Math.PI / 180;
+    const dLng = (coords2[0] - coords1[0]) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng/2) * Math.sin(dLng/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function getBearing(coords1, coords2) {
+    const lng1 = coords1[0];
+    const lat1 = coords1[1];
+    const lng2 = coords2[0];
+    const lat2 = coords2[1];
+    const dLng = lng2 - lng1;
+    const dLat = lat2 - lat1;
+    return Math.atan2(dLng, dLat) * 180 / Math.PI;
+}
+
 // Helper to calculate total distance of an edge using straight-line distance
 function getEdgeDistance(edgeId) {
+    const coords = roadGeometries[edgeId];
+    if (coords && coords.length > 1) {
+        let totalLength = 0;
+        for (let i = 0; i < coords.length - 1; i++) {
+            totalLength += getDistance(coords[i], coords[i + 1]);
+        }
+        return totalLength;
+    }
     const edge = EDGES.find(e => e.id === edgeId);
     if (edge) {
         const fromNode = NODES[edge.from];
@@ -956,9 +1068,10 @@ function startSimulationLoop() {
             // Interpolate position coordinate
             const fromNode = NODES[edge.from];
             const toNode = NODES[edge.to];
-            
-            const lng = fromNode.coords[0] + (toNode.coords[0] - fromNode.coords[0]) * v.progress;
-            const lat = fromNode.coords[1] + (toNode.coords[1] - fromNode.coords[1]) * v.progress;
+            const geom = roadGeometries[edge.id] || [fromNode.coords, toNode.coords];
+            const interpolated = interpolatePosition(geom, v.progress);
+            const lng = interpolated[0];
+            const lat = interpolated[1];
 
             v.lat = lat;
             v.lng = lng;
