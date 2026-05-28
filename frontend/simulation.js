@@ -85,6 +85,7 @@ let mapboxToken = localStorage.getItem("mapbox_token") || "";
 let totalKarma = 0;
 let autoSpawnInterval = null;
 let roadGeometries = {};
+let currentEdgeLoads = {};
 
 // Fetch and cache road geometries from Mapbox Directions API
 async function loadRoadGeometries() {
@@ -131,6 +132,26 @@ async function loadRoadGeometries() {
     await Promise.all(fetchPromises);
     localStorage.setItem(cacheKey, JSON.stringify(roadGeometries));
     console.log("Fetched and cached road geometries");
+}
+
+// Distance Calculation (meters)
+function getDistance(coords1, coords2) {
+    const lon1 = coords1[0];
+    const lat1 = coords1[1];
+    const lon2 = coords2[0];
+    const lat2 = coords2[1];
+    
+    const R = 6371000; // Earth radius in meters
+    const phi1 = lat1 * Math.PI / 180;
+    const phi2 = lat2 * Math.PI / 180;
+    const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+    const deltaLambda = (lon2 - lon1) * Math.PI / 180;
+    
+    const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+              Math.cos(phi1) * Math.cos(phi2) *
+              Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
 }
 
 // Interpolate coordinates along a polyline based on progress (0 to 1)
@@ -476,16 +497,16 @@ function updateMapEdgeLoads(positions) {
     if (!map || !map.getSource('streets')) return;
 
     // Reset loads
-    const edgeLoads = {};
-    EDGES.forEach(e => { edgeLoads[e.id] = 0; });
+    currentEdgeLoads = {};
+    EDGES.forEach(e => { currentEdgeLoads[e.id] = 0; });
 
     positions.forEach(pos => {
         if (pos.id === "user_nav_vehicle") return;
         const vState = localVehicles[pos.id];
         if (vState && vState.path && vState.pathIndex < vState.path.length) {
             const edgeId = vState.path[vState.pathIndex];
-            if (edgeLoads[edgeId] !== undefined) {
-                edgeLoads[edgeId]++;
+            if (currentEdgeLoads[edgeId] !== undefined) {
+                currentEdgeLoads[edgeId]++;
             }
         }
     });
@@ -493,7 +514,7 @@ function updateMapEdgeLoads(positions) {
     // Update map street layers
     const features = EDGES.map(edge => {
         const coords = roadGeometries[edge.id] || [NODES[edge.from].coords, NODES[edge.to].coords];
-        const load = edgeLoads[edge.id] || 0;
+        const load = currentEdgeLoads[edge.id] || 0;
         return {
             "type": "Feature",
             "properties": { "id": edge.id, "load": load },
@@ -513,7 +534,7 @@ function updateMapEdgeLoads(positions) {
     let totalLoad = 0;
     let totalCap = 0;
     EDGES.forEach(edge => {
-        const load = edgeLoads[edge.id] || 0;
+        const load = currentEdgeLoads[edge.id] || 0;
         totalLoad += load;
         totalCap += edge.cap;
     });
@@ -780,6 +801,56 @@ function spawnMultipleCivilians(count) {
     }
 }
 
+// Helper to calculate total distance of an edge using geometric coords or straight-line distance
+function getEdgeDistance(edgeId) {
+    const coords = roadGeometries[edgeId];
+    if (coords && coords.length > 1) {
+        let totalLength = 0;
+        for (let i = 0; i < coords.length - 1; i++) {
+            totalLength += getDistance(coords[i], coords[i + 1]);
+        }
+        return totalLength;
+    }
+    const edge = EDGES.find(e => e.id === edgeId);
+    if (edge) {
+        const fromNode = NODES[edge.from];
+        const toNode = NODES[edge.to];
+        if (fromNode && toNode) {
+            return getDistance(fromNode.coords, toNode.coords);
+        }
+    }
+    return 0;
+}
+
+// Calculate realistic travel time dynamically based on fully/partially traversed edges
+function getRealisticTime(v) {
+    if (!v || !v.path || v.path.length === 0) return 0;
+    let totalTime = 0;
+    
+    // Loop through all traversed edges in the path
+    for (let i = 0; i <= v.pathIndex && i < v.path.length; i++) {
+        const edgeId = v.path[i];
+        const edgeDistance = getEdgeDistance(edgeId);
+        if (edgeDistance <= 0) continue;
+        
+        const portion = (i === v.pathIndex) ? v.progress : 1.0;
+        const distanceTraversed = portion * edgeDistance;
+        
+        let speed = (v.type === 2) ? 20.0 : 13.89; // 20 m/s for emergency, 13.89 m/s for civilian/fleet
+        
+        const edgeObj = EDGES.find(e => e.id === edgeId);
+        if (edgeObj && edgeObj.cap > 0) {
+            const load = currentEdgeLoads[edgeId] || 0;
+            const loadFactor = load / edgeObj.cap;
+            speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
+        }
+        
+        totalTime += distanceTraversed / speed;
+    }
+    
+    return Math.round(totalTime);
+}
+
 // Render dynamic scrollable list of active vehicles
 function updateActiveVehiclesList() {
     if (!activeVehiclesList) return;
@@ -793,7 +864,7 @@ function updateActiveVehiclesList() {
     
     let html = "";
     vehicles.forEach((v, idx) => {
-        const duration = Math.floor((Date.now() - v.spawnTime) / 1000);
+        const duration = getRealisticTime(v);
         let typeIcon = '<i class="fa-solid fa-car"></i>';
         let typeClass = "civilian";
         if (v.type === 2) {
