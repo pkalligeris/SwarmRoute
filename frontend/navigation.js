@@ -44,38 +44,6 @@ const EDGES = [
     { id: "H-J", from: "H", to: "J", cap: 10 }
 ];
 
-// Street name mapping dictionary for turn-by-turn guidance
-const STREET_NAMES = {
-    "A-D": "Panepistimiou St",
-    "D-A": "Panepistimiou St",
-    "D-B": "Aiolou St",
-    "B-D": "Aiolou St",
-    "B-C": "Athinas St",
-    "C-B": "Athinas St",
-    "A-C": "Ermou St",
-    "C-A": "Ermou St",
-    "A-G": "Filellinon St",
-    "G-A": "Filellinon St",
-    "G-I": "Dionysiou Areopagitou St",
-    "I-G": "Dionysiou Areopagitou St",
-    "I-C": "Apostolou Pavlou St",
-    "C-I": "Apostolou Pavlou St",
-    "C-H": "Ermou St (West)",
-    "H-C": "Ermou St (West)",
-    "B-H": "Pireos St",
-    "H-B": "Pireos St",
-    "A-E": "Vasilissis Sofias Ave",
-    "E-A": "Vasilissis Sofias Ave",
-    "E-F": "Koumpari St",
-    "F-E": "Koumpari St",
-    "A-F": "Vasilissis Sofias Ave (East)",
-    "F-A": "Vasilissis Sofias Ave (East)",
-    "I-J": "Akamantos St",
-    "J-I": "Akamantos St",
-    "J-H": "Thessalonikis St",
-    "H-J": "Thessalonikis St"
-};
-
 // App State
 let map = null;
 let socket = null;
@@ -83,9 +51,9 @@ let markers = {}; // vehicle_id -> mapbox marker
 let localVehicles = {}; // vehicle_id -> vehicle state
 let currentEdgeLoads = {}; // edge_id -> vehicle count
 let mapboxToken = localStorage.getItem("mapbox_token") || "";
-let isUserNavigating = false;
-let lastSpokenInstruction = "";
 let roadGeometries = {};
+let currentAdoptionRate = 0;
+let followedVehicleId = null;
 
 // Fetch and cache road geometries from Mapbox Directions API
 async function loadRoadGeometries() {
@@ -176,13 +144,6 @@ const modalToken = document.getElementById("modal-token-required");
 const modalTokenInput = document.getElementById("modal-token-input");
 const btnModalSave = document.getElementById("btn-modal-save");
 
-const btnStartNav = document.getElementById("btn-start-nav");
-const btnStopNav = document.getElementById("btn-stop-nav");
-const navOrigin = document.getElementById("nav-origin");
-const navDest = document.getElementById("nav-destination");
-const navSelfish = document.getElementById("nav-selfish");
-const navEmergency = document.getElementById("nav-emergency");
-
 // Initialize application
 document.addEventListener("DOMContentLoaded", async () => {
     if (mapboxToken) {
@@ -199,42 +160,57 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 function setupEventListeners() {
     // Save token actions
-    btnSaveToken.addEventListener("click", () => {
-        const tok = tokenInput.value.trim();
-        if (tok) {
-            localStorage.setItem("mapbox_token", tok);
-            location.reload();
-        }
-    });
-
-    btnModalSave.addEventListener("click", () => {
-        const tok = modalTokenInput.value.trim();
-        if (tok) {
-            localStorage.setItem("mapbox_token", tok);
-            modalToken.classList.add("hidden");
-            location.reload();
-        }
-    });
-
-    // Navigation triggers
-    if (btnStartNav) {
-        btnStartNav.addEventListener("click", () => {
-            const origin = navOrigin.value;
-            const dest = navDest.value;
-            if (origin === dest) {
-                alert("Start intersection and destination must be different!");
-                return;
+    if (btnSaveToken) {
+        btnSaveToken.addEventListener("click", () => {
+            const tok = tokenInput.value.trim();
+            if (tok) {
+                localStorage.setItem("mapbox_token", tok);
+                location.reload();
             }
-            const isSelfish = navSelfish.checked;
-            const isEmergency = navEmergency.checked;
-            startUserNavigation(origin, dest, isSelfish, isEmergency);
         });
     }
 
-    if (btnStopNav) {
-        btnStopNav.addEventListener("click", () => {
-            stopUserNavigation();
+    if (btnModalSave) {
+        btnModalSave.addEventListener("click", () => {
+            const tok = modalTokenInput.value.trim();
+            if (tok) {
+                localStorage.setItem("mapbox_token", tok);
+                modalToken.classList.add("hidden");
+                location.reload();
+            }
         });
+    }
+
+    const adoptionSlider = document.getElementById("adoption-rate");
+    const adoptionVal = document.getElementById("adoption-rate-val");
+    if (adoptionSlider && adoptionSlider.parentElement) {
+        const btnContainer = document.createElement('div');
+        btnContainer.className = 'adoption-buttons';
+        btnContainer.style.display = 'flex';
+        btnContainer.style.gap = '10px';
+        btnContainer.style.margin = '10px 0';
+        [25, 50, 75, 100].forEach(rate => {
+            const btn = document.createElement('button');
+            btn.textContent = rate + '%';
+            btn.className = 'btn btn-outline';
+            btn.style.flex = '1';
+            btn.style.padding = '10px';
+            btn.style.fontWeight = 'bold';
+            btn.style.fontSize = '1.1em';
+            btn.onclick = () => {
+                currentAdoptionRate = rate;
+                if (adoptionVal) adoptionVal.textContent = rate + '%';
+                
+                Array.from(btnContainer.children).forEach(b => {
+                    b.className = 'btn btn-outline';
+                });
+                btn.className = 'btn btn-primary';
+                
+                triggerIoTReRoute(true); // Force reroute on adoption change
+            };
+            btnContainer.appendChild(btn);
+        });
+        adoptionSlider.parentElement.replaceChild(btnContainer, adoptionSlider);
     }
 }
 
@@ -409,6 +385,7 @@ function updateVehicleMarkers(positions) {
     const activeIds = new Set();
 
     positions.forEach(pos => {
+        if (pos.current_edge === "finished") return;
         activeIds.add(pos.id);
         
         let marker = markers[pos.id];
@@ -416,10 +393,7 @@ function updateVehicleMarkers(positions) {
             const el = document.createElement('div');
             el.className = 'vehicle-marker';
             
-            if (pos.id === "user_nav_vehicle") {
-                el.classList.add('user-marker');
-                el.innerHTML = '<i class="fa-solid fa-location-arrow"></i>';
-            } else if (pos.type === 2) { // Emergency
+            if (pos.type === 2) { // Emergency
                 el.classList.add('emergency-marker');
                 el.innerHTML = '<i class="fa-solid fa-truck-medical"></i>';
             } else if (pos.type === 1) { // Delivery
@@ -433,6 +407,25 @@ function updateVehicleMarkers(positions) {
             marker = new mapboxgl.Marker(el)
                 .setLngLat([pos.lng, pos.lat])
                 .addTo(map);
+
+            // Click to follow camera
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (followedVehicleId === pos.id) {
+                    followedVehicleId = null;
+                    if (map) {
+                        map.easeTo({
+                            center: [23.7310, 37.9760],
+                            zoom: 14.2,
+                            pitch: 50,
+                            bearing: -10,
+                            duration: 1000
+                        });
+                    }
+                } else {
+                    followedVehicleId = pos.id;
+                }
+            });
                 
             markers[pos.id] = marker;
         } else {
@@ -486,109 +479,62 @@ function updateMapEdgeLoads(positions) {
     });
 }
 
-// Highlight the entire route path on the map with custom glow styles
-function drawRouteHighlight(pathEdges, isEmergency) {
-    if (!map) return;
-    
-    const coordinates = [];
-    pathEdges.forEach(edgeId => {
-        const geom = roadGeometries[edgeId];
-        if (geom) {
-            coordinates.push(...geom);
-        } else {
-            const edge = EDGES.find(e => e.id === edgeId);
-            if (edge) {
-                const fromNode = NODES[edge.from];
-                const toNode = NODES[edge.to];
-                if (coordinates.length === 0) {
-                    coordinates.push(fromNode.coords);
-                }
-                coordinates.push(toNode.coords);
-            }
-        }
-    });
-
-    const geojson = {
-        "type": "Feature",
-        "properties": {},
-        "geometry": {
-            "type": "LineString",
-            "coordinates": coordinates
-        }
-    };
-
-    const color = isEmergency ? "#ec4899" : "#00ffff"; // neon-pink for emergency priority, neon-cyan otherwise
-    
-    if (map.getSource('route-path')) {
-        map.getSource('route-path').setData(geojson);
-    } else {
-        map.addSource('route-path', {
-            "type": "geojson",
-            "data": geojson
-        });
-    }
-
-    // Glowing thick layer
-    if (map.getLayer('route-line-glow')) {
-        map.setPaintProperty('route-line-glow', 'line-color', color);
-    } else {
-        map.addLayer({
-            "id": "route-line-glow",
-            "type": "line",
-            "source": "route-path",
-            "layout": {
-                "line-join": "round",
-                "line-cap": "round"
-            },
-            "paint": {
-                "line-color": color,
-                "line-width": 8,
-                "line-opacity": 0.8,
-                "line-blur": 3
-            }
-        });
-    }
-
-    // Sharp central core layer
-    if (map.getLayer('route-line')) {
-        map.setPaintProperty('route-line', 'line-color', color);
-    } else {
-        map.addLayer({
-            "id": "route-line",
-            "type": "line",
-            "source": "route-path",
-            "layout": {
-                "line-join": "round",
-                "line-cap": "round"
-            },
-            "paint": {
-                "line-color": "#ffffff",
-                "line-width": 3,
-                "line-opacity": 0.9
-            }
-        });
-    }
-}
-
-function clearRouteHighlight() {
-    if (!map) return;
-    if (map.getLayer('route-line')) map.removeLayer('route-line');
-    if (map.getLayer('route-line-glow')) map.removeLayer('route-line-glow');
-    if (map.getSource('route-path')) map.removeSource('route-path');
-}
-
 function handleRouteResponse(resp) {
-    if (resp.vehicle_id !== "user_nav_vehicle") return;
-    
     const v = localVehicles[resp.vehicle_id];
     if (!v) return;
 
-    v.path = resp.path.edges;
-    v.pathIndex = 0;
-    v.progress = 0;
+    if (v.pendingReroute) {
+        v.pendingReroute = false;
+        const currentEdgeId = v.path[v.pathIndex];
+        v.path = [currentEdgeId, ...resp.path.edges];
+        v.pathIndex = 0;
+    } else {
+        v.path = resp.path.edges;
+        v.pathIndex = 0;
+        v.progress = 0;
+    }
+}
 
-    // Highlight the path
-    drawRouteHighlight(v.path, resp.emergency);
+function triggerIoTReRoute(force = false) {
+    if (!force) {
+        const iotToggle = document.getElementById("iot-toggle");
+        if (iotToggle && !iotToggle.checked) return;
+    }
+
+    let needsReroute = force;
+    if (!needsReroute) {
+        EDGES.forEach(edge => {
+            const load = currentEdgeLoads[edge.id] || 0;
+            if (edge.cap > 0 && load / edge.cap >= 0.8) {
+                needsReroute = true;
+            }
+        });
+    }
+
+    if (needsReroute) {
+        Object.keys(localVehicles).forEach(id => {
+            const v = localVehicles[id];
+            if ((v.type === 0 || v.type === 1) && v.path && v.pathIndex < v.path.length) {
+                const currentEdgeId = v.path[v.pathIndex];
+                const edge = EDGES.find(e => e.id === currentEdgeId);
+                if (edge) {
+                    v.pendingReroute = true;
+                    socket.send(JSON.stringify({
+                        type: "route_request",
+                        payload: {
+                            vehicle_id: v.id,
+                            origin: edge.to,
+                            destination: v.destination,
+                            type: v.type,
+                            selfish: v.selfish,
+                            emergency: false,
+                            fleet_id: v.fleet_id || ""
+                        }
+                    }));
+                }
+            }
+        });
+    }
 }
 
 // Distance Calculation (meters)
@@ -624,246 +570,6 @@ function getBearing(coords1, coords2) {
     return Math.atan2(dLng, dLat) * 180 / Math.PI;
 }
 
-// Turn instruction generation
-function getTurnInstruction(currentEdgeId, nextEdgeId) {
-    if (!currentEdgeId) return null;
-    
-    const currEdge = EDGES.find(e => e.id === currentEdgeId);
-    if (!currEdge) return null;
-    
-    const currFromNode = NODES[currEdge.from];
-    const currToNode = NODES[currEdge.to];
-    const currBearing = getBearing(currFromNode.coords, currToNode.coords);
-    
-    if (!nextEdgeId) {
-        return {
-            text: `Arrive at your destination, ${currToNode.name}`,
-            iconClass: "fa-solid fa-location-dot",
-            bearing: currBearing
-        };
-    }
-    
-    const nextEdge = EDGES.find(e => e.id === nextEdgeId);
-    if (!nextEdge) return null;
-    
-    const nextFromNode = NODES[nextEdge.from];
-    const nextToNode = NODES[nextEdge.to];
-    const nextBearing = getBearing(nextFromNode.coords, nextToNode.coords);
-    
-    let diff = nextBearing - currBearing;
-    while (diff > 180) diff -= 360;
-    while (diff < -180) diff += 360;
-    
-    const nextStreetName = STREET_NAMES[nextEdgeId] || "Athens Street";
-    let direction = "";
-    let iconClass = "";
-    
-    if (diff >= -35 && diff <= 35) {
-        direction = `Continue straight onto ${nextStreetName}`;
-        iconClass = "fa-solid fa-arrow-up";
-    } else if (diff > 35 && diff <= 145) {
-        direction = `Turn right onto ${nextStreetName}`;
-        iconClass = "fa-solid fa-arrow-turn-up-right";
-    } else if (diff < -35 && diff >= -145) {
-        direction = `Turn left onto ${nextStreetName}`;
-        iconClass = "fa-solid fa-arrow-turn-up-left";
-    } else {
-        direction = `Make a U-turn onto ${nextStreetName}`;
-        iconClass = "fa-solid fa-arrow-rotate-left";
-    }
-    
-    return {
-        text: direction,
-        iconClass: iconClass,
-        bearing: currBearing
-    };
-}
-
-// Navigation HUD updates & voice assistance
-function updateNavigationHUD(v) {
-    if (!v || v.path.length === 0) return;
-    
-    const currentEdgeId = v.path[v.pathIndex];
-    const nextEdgeId = v.path[v.pathIndex + 1];
-    
-    const instructionObj = getTurnInstruction(currentEdgeId, nextEdgeId);
-    if (!instructionObj) return;
-    
-    const instructionEl = document.getElementById("hud-instruction");
-    const iconEl = document.getElementById("hud-turn-icon");
-    
-    if (instructionEl) instructionEl.textContent = instructionObj.text;
-    if (iconEl) iconEl.className = instructionObj.iconClass;
-    
-    speakInstruction(instructionObj.text);
-    
-    let totalDistRemaining = 0;
-    const currEdge = EDGES.find(e => e.id === currentEdgeId);
-    if (currEdge) {
-        const fromNode = NODES[currEdge.from];
-        const toNode = NODES[currEdge.to];
-        const edgeLen = getDistance(fromNode.coords, toNode.coords);
-        totalDistRemaining += edgeLen * (1 - v.progress);
-    }
-    
-    for (let i = v.pathIndex + 1; i < v.path.length; i++) {
-        const edgeId = v.path[i];
-        const edge = EDGES.find(e => e.id === edgeId);
-        if (edge) {
-            const fromNode = NODES[edge.from];
-            const toNode = NODES[edge.to];
-            totalDistRemaining += getDistance(fromNode.coords, toNode.coords);
-        }
-    }
-    
-    const distanceEl = document.getElementById("hud-distance");
-    const etaEl = document.getElementById("hud-eta");
-    
-    if (distanceEl) {
-        distanceEl.innerHTML = `<i class="fa-solid fa-route"></i> ${Math.round(totalDistRemaining)} m`;
-    }
-    
-    if (etaEl) {
-        const speed = v.type === 2 ? 24 : 12;
-        const etaSeconds = Math.round(totalDistRemaining / speed);
-        etaEl.innerHTML = `<i class="fa-solid fa-clock"></i> ${etaSeconds} s remaining`;
-    }
-}
-
-// Speak turn instructions out loud
-function speakInstruction(text) {
-    if (!text || text === lastSpokenInstruction) return;
-    lastSpokenInstruction = text;
-    if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-        window.speechSynthesis.speak(utterance);
-    }
-}
-
-// Start user navigation
-function startUserNavigation(origin, dest, isSelfish, isEmergency) {
-    if (localVehicles["user_nav_vehicle"]) {
-        if (markers["user_nav_vehicle"]) {
-            markers["user_nav_vehicle"].remove();
-            delete markers["user_nav_vehicle"];
-        }
-        delete localVehicles["user_nav_vehicle"];
-    }
-    
-    lastSpokenInstruction = "";
-    
-    if (btnStartNav) btnStartNav.disabled = true;
-    if (btnStopNav) btnStopNav.disabled = false;
-    
-    isUserNavigating = true;
-    
-    const hud = document.getElementById("navigation-hud");
-    if (hud) {
-        hud.classList.remove("hidden");
-        if (isEmergency) {
-            hud.classList.add("emergency");
-        } else {
-            hud.classList.remove("emergency");
-        }
-        
-        const instructionEl = document.getElementById("hud-instruction");
-        const distanceEl = document.getElementById("hud-distance");
-        const etaEl = document.getElementById("hud-eta");
-        if (instructionEl) instructionEl.textContent = "Calculating route...";
-        if (distanceEl) distanceEl.innerHTML = `<i class="fa-solid fa-route"></i> -- m`;
-        if (etaEl) etaEl.innerHTML = `<i class="fa-solid fa-clock"></i> -- s remaining`;
-    }
-    
-    localVehicles["user_nav_vehicle"] = {
-        id: "user_nav_vehicle",
-        origin: origin,
-        destination: dest,
-        type: isEmergency ? 2 : 0,
-        selfish: isSelfish,
-        path: [],
-        pathIndex: 0,
-        progress: 0,
-        lat: NODES[origin].coords[1],
-        lng: NODES[origin].coords[0]
-    };
-    
-    socket.send(JSON.stringify({
-        type: "register_vehicle",
-        payload: {
-            id: "user_nav_vehicle",
-            type: isEmergency ? 2 : 0,
-            origin: origin,
-            destination: dest,
-            current_edge: "",
-            lat: NODES[origin].coords[1],
-            lng: NODES[origin].coords[0]
-        }
-    }));
-    
-    socket.send(JSON.stringify({
-        type: "route_request",
-        payload: {
-            vehicle_id: "user_nav_vehicle",
-            origin: origin,
-            destination: dest,
-            type: isEmergency ? 2 : 0,
-            selfish: isSelfish,
-            emergency: isEmergency,
-            fleet_id: ""
-        }
-    }));
-}
-
-// Stop user navigation
-function stopUserNavigation() {
-    isUserNavigating = false;
-    
-    if (localVehicles["user_nav_vehicle"]) {
-        socket.send(JSON.stringify({
-            type: "update_position",
-            payload: {
-                vehicle_id: "user_nav_vehicle",
-                lat: localVehicles["user_nav_vehicle"].lat,
-                lng: localVehicles["user_nav_vehicle"].lng,
-                current_edge: ""
-            }
-        }));
-        delete localVehicles["user_nav_vehicle"];
-    }
-    
-    if (markers["user_nav_vehicle"]) {
-        markers["user_nav_vehicle"].remove();
-        delete markers["user_nav_vehicle"];
-    }
-    
-    clearRouteHighlight();
-    
-    if (btnStartNav) btnStartNav.disabled = false;
-    if (btnStopNav) btnStopNav.disabled = true;
-    
-    const hud = document.getElementById("navigation-hud");
-    if (hud) {
-        hud.classList.add("hidden");
-        hud.classList.remove("emergency");
-    }
-    
-    if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-    }
-    
-    if (map) {
-        map.easeTo({
-            center: [23.7310, 37.9760],
-            zoom: 14.2,
-            pitch: 50,
-            bearing: -10,
-            duration: 1000
-        });
-    }
-}
 
 // Helper to calculate total distance of an edge using geometric coords or straight-line distance
 function getEdgeDistance(edgeId) {
@@ -888,8 +594,15 @@ function getEdgeDistance(edgeId) {
 
 // Client-Side Telemetry Simulation Loop
 function startSimulationLoop() {
-    setInterval(() => {
+    let lastTime = performance.now();
+
+    function animate(currentTime) {
+        requestAnimationFrame(animate);
+
         if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+        const deltaTime = currentTime - lastTime;
+        lastTime = currentTime;
 
         Object.keys(localVehicles).forEach(id => {
             const v = localVehicles[id];
@@ -909,11 +622,17 @@ function startSimulationLoop() {
                 speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
             }
             
+            if (typeof adoptionSlider !== 'undefined' && adoptionSlider) {
+                const adoptionRate = parseInt(adoptionSlider.value) || 0;
+                speed *= (1.0 + (adoptionRate / 100.0));
+            }
+            
             const edgeDistance = getEdgeDistance(currentEdgeId);
             let speedStep = 0.08; // fallback
             if (edgeDistance > 0) {
-                // 150ms tick rate means dt = 0.15s
-                speedStep = (speed * 0.15) / edgeDistance;
+                // Calculate movement based on dynamic delta time (seconds)
+                const dtSeconds = deltaTime / 1000.0;
+                speedStep = (speed * dtSeconds) / edgeDistance;
             }
 
             v.progress += speedStep;
@@ -929,15 +648,22 @@ function startSimulationLoop() {
                             vehicle_id: v.id,
                             lat: NODES[v.destination].coords[1],
                             lng: NODES[v.destination].coords[0],
-                            current_edge: ""
+                            current_edge: "finished"
                         }
                     }));
-                    if (v.id === "user_nav_vehicle") {
-                        speakInstruction(`Arrived at destination, ${NODES[v.destination].name}`);
-                        stopUserNavigation();
-                    } else {
-                        delete localVehicles[v.id];
+                    if (v.id === followedVehicleId) {
+                        followedVehicleId = null;
+                        if (map) {
+                            map.easeTo({
+                                center: [23.7310, 37.9760],
+                                zoom: 14.2,
+                                pitch: 50,
+                                bearing: -10,
+                                duration: 1000
+                            });
+                        }
                     }
+                    delete localVehicles[v.id];
                     return;
                 }
             }
@@ -962,21 +688,20 @@ function startSimulationLoop() {
                 }
             }));
 
-            // GPS Camera Follow Mode
-            if (id === "user_nav_vehicle" && isUserNavigating) {
+            // Dynamic 3D Camera to follow selected vehicle
+            if (followedVehicleId === v.id && map) {
                 const edgeBearing = getBearing(fromNode.coords, toNode.coords);
-                if (map) {
-                    map.easeTo({
-                        center: [lng, lat],
-                        zoom: 17,
-                        pitch: 60,
-                        bearing: edgeBearing,
-                        duration: 150,
-                        easing: (t) => t
-                    });
-                }
-                updateNavigationHUD(v);
+                const timeFactor = (performance.now() / 1500);
+                const dynamicPitch = 60 + Math.sin(timeFactor) * 15;
+                map.jumpTo({
+                    center: [lng, lat],
+                    zoom: 16.5,
+                    pitch: dynamicPitch,
+                    bearing: edgeBearing
+                });
             }
         });
-    }, 150); // 150ms tick rate
+    }
+
+    requestAnimationFrame(animate);
 }

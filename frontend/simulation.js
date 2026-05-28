@@ -44,38 +44,6 @@ const EDGES = [
     { id: "H-J", from: "H", to: "J", cap: 10 }
 ];
 
-// Street name mapping dictionary for turn-by-turn guidance
-const STREET_NAMES = {
-    "A-D": "Panepistimiou St",
-    "D-A": "Panepistimiou St",
-    "D-B": "Aiolou St",
-    "B-D": "Aiolou St",
-    "B-C": "Athinas St",
-    "C-B": "Athinas St",
-    "A-C": "Ermou St",
-    "C-A": "Ermou St",
-    "A-G": "Filellinon St",
-    "G-A": "Filellinon St",
-    "G-I": "Dionysiou Areopagitou St",
-    "I-G": "Dionysiou Areopagitou St",
-    "I-C": "Apostolou Pavlou St",
-    "C-I": "Apostolou Pavlou St",
-    "C-H": "Ermou St (West)",
-    "H-C": "Ermou St (West)",
-    "B-H": "Pireos St",
-    "H-B": "Pireos St",
-    "A-E": "Vasilissis Sofias Ave",
-    "E-A": "Vasilissis Sofias Ave",
-    "E-F": "Koumpari St",
-    "F-E": "Koumpari St",
-    "A-F": "Vasilissis Sofias Ave (East)",
-    "F-A": "Vasilissis Sofias Ave (East)",
-    "I-J": "Akamantos St",
-    "J-I": "Akamantos St",
-    "J-H": "Thessalonikis St",
-    "H-J": "Thessalonikis St"
-};
-
 // App State
 let map = null;
 let socket = null;
@@ -86,6 +54,8 @@ let totalKarma = 0;
 let autoSpawnInterval = null;
 let roadGeometries = {};
 let currentEdgeLoads = {};
+let currentAdoptionRate = 0;
+let followedVehicleId = null;
 
 // Fetch and cache road geometries from Mapbox Directions API
 async function loadRoadGeometries() {
@@ -154,6 +124,17 @@ function getDistance(coords1, coords2) {
     return R * c;
 }
 
+// Calculate bearing (degrees) between two [Lng, Lat] coordinates
+function getBearing(coords1, coords2) {
+    const lng1 = coords1[0];
+    const lat1 = coords1[1];
+    const lng2 = coords2[0];
+    const lat2 = coords2[1];
+    const dLng = lng2 - lng1;
+    const dLat = lat2 - lat1;
+    return Math.atan2(dLng, dLat) * 180 / Math.PI;
+}
+
 // Interpolate coordinates along a polyline based on progress (0 to 1)
 function interpolatePosition(coords, progress) {
     if (!coords || coords.length === 0) return [0, 0];
@@ -194,8 +175,6 @@ const adoptionSlider = document.getElementById("adoption-rate");
 const adoptionVal = document.getElementById("adoption-rate-val");
 const iotToggle = document.getElementById("iot-toggle");
 const autospawnToggle = document.getElementById("autospawn-toggle");
-const btnSpawnCivilian = document.getElementById("btn-spawn-civilian");
-const btnSpawnFleet = document.getElementById("btn-spawn-fleet");
 const btnSpawnEmergency = document.getElementById("btn-spawn-emergency");
 const btnClearSim = document.getElementById("btn-clear-simulation");
 
@@ -228,42 +207,72 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 function setupEventListeners() {
     // Save token actions
-    btnSaveToken.addEventListener("click", () => {
-        const tok = tokenInput.value.trim();
-        if (tok) {
-            localStorage.setItem("mapbox_token", tok);
-            location.reload();
-        }
-    });
+    if (btnSaveToken) {
+        btnSaveToken.addEventListener("click", () => {
+            const tok = tokenInput.value.trim();
+            if (tok) {
+                localStorage.setItem("mapbox_token", tok);
+                location.reload();
+            }
+        });
+    }
 
-    btnModalSave.addEventListener("click", () => {
-        const tok = modalTokenInput.value.trim();
-        if (tok) {
-            localStorage.setItem("mapbox_token", tok);
-            modalToken.classList.add("hidden");
-            location.reload();
-        }
-    });
+    if (btnModalSave) {
+        btnModalSave.addEventListener("click", () => {
+            const tok = modalTokenInput.value.trim();
+            if (tok) {
+                localStorage.setItem("mapbox_token", tok);
+                modalToken.classList.add("hidden");
+                location.reload();
+            }
+        });
+    }
 
     // Slider listener
-    adoptionSlider.addEventListener("input", (e) => {
-        adoptionVal.textContent = e.target.value + "%";
-    });
+    if (adoptionSlider && adoptionSlider.parentElement) {
+        const btnContainer = document.createElement('div');
+        btnContainer.className = 'adoption-buttons';
+        btnContainer.style.display = 'flex';
+        btnContainer.style.gap = '10px';
+        btnContainer.style.margin = '10px 0';
+        [25, 50, 75, 100].forEach(rate => {
+            const btn = document.createElement('button');
+            btn.textContent = rate + '%';
+            btn.className = 'btn btn-outline';
+            btn.style.flex = '1';
+            btn.style.padding = '10px';
+            btn.style.fontWeight = 'bold';
+            btn.style.fontSize = '1.1em';
+            btn.onclick = () => {
+                currentAdoptionRate = rate;
+                if (adoptionVal) adoptionVal.textContent = rate + '%';
+                
+                Array.from(btnContainer.children).forEach(b => {
+                    b.className = 'btn btn-outline';
+                });
+                btn.className = 'btn btn-primary';
+                
+                triggerIoTReRoute(true); // Force reroute on adoption change
+            };
+            btnContainer.appendChild(btn);
+        });
+        adoptionSlider.parentElement.replaceChild(btnContainer, adoptionSlider);
+    }
 
     // Spawn triggers
-    btnSpawnCivilian.addEventListener("click", () => spawnCivilian());
-    btnSpawnFleet.addEventListener("click", () => spawnFleet());
-    btnSpawnEmergency.addEventListener("click", () => spawnEmergency());
-    btnClearSim.addEventListener("click", () => clearSimulation());
+    if (btnSpawnEmergency) btnSpawnEmergency.addEventListener("click", () => spawnEmergency());
+    if (btnClearSim) btnClearSim.addEventListener("click", () => clearSimulation());
 
     // Auto-Spawn Toggle
-    autospawnToggle.addEventListener("change", (e) => {
-        if (e.target.checked) {
-            startAutoSpawn();
-        } else {
-            stopAutoSpawn();
-        }
-    });
+    if (autospawnToggle) {
+        autospawnToggle.addEventListener("change", (e) => {
+            if (e.target.checked) {
+                startAutoSpawn();
+            } else {
+                stopAutoSpawn();
+            }
+        });
+    }
 }
 
 // Mapbox Setup
@@ -407,6 +416,7 @@ function connectWebSocket() {
 
     socket.onopen = () => {
         console.log("Connected to SwarmRoute WebSocket Server");
+        startAutoSpawn(); // Automatically start spawning randomly assigned vehicles
     };
 
     socket.onmessage = (event) => {
@@ -438,8 +448,7 @@ function updateVehicleMarkers(positions) {
     const activeIds = new Set();
 
     positions.forEach(pos => {
-        // We ignore user navigation vehicle on the simulation page if it leaks
-        if (pos.id === "user_nav_vehicle") return;
+        if (pos.current_edge === "finished") return;
 
         activeIds.add(pos.id);
         
@@ -469,6 +478,25 @@ function updateVehicleMarkers(positions) {
             marker = new mapboxgl.Marker(el)
                 .setLngLat([pos.lng, pos.lat])
                 .addTo(map);
+
+            // Click to follow camera
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (followedVehicleId === pos.id) {
+                    followedVehicleId = null;
+                    if (map) {
+                        map.easeTo({
+                            center: [23.7310, 37.9760],
+                            zoom: 14.2,
+                            pitch: 50,
+                            bearing: -10,
+                            duration: 1000
+                        });
+                    }
+                } else {
+                    followedVehicleId = pos.id;
+                }
+            });
                 
             markers[pos.id] = marker;
         } else {
@@ -501,7 +529,6 @@ function updateMapEdgeLoads(positions) {
     EDGES.forEach(e => { currentEdgeLoads[e.id] = 0; });
 
     positions.forEach(pos => {
-        if (pos.id === "user_nav_vehicle") return;
         const vState = localVehicles[pos.id];
         if (vState && vState.path && vState.pathIndex < vState.path.length) {
             const edgeId = vState.path[vState.pathIndex];
@@ -561,6 +588,9 @@ function updateMapEdgeLoads(positions) {
 
 // Spawning Vehicles Logic
 function spawnCivilian() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
     const id = "c_" + Math.random().toString(36).substr(2, 6);
     const nodeIDs = Object.keys(NODES);
     const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
@@ -569,8 +599,7 @@ function spawnCivilian() {
         dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
     }
 
-    const adoptionRate = parseInt(adoptionSlider.value);
-    const isSelfish = Math.random() * 100 > adoptionRate;
+    const isSelfish = Math.random() * 100 > currentAdoptionRate;
 
     const req = {
         vehicle_id: id,
@@ -615,15 +644,25 @@ function spawnCivilian() {
         type: "route_request",
         payload: req
     }));
+
+    triggerIoTReRoute();
 }
 
 function spawnFleet() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
     const fleetID = "fleet_athens_" + Math.random().toString(36).substr(2, 4);
-    const destinations = ["H", "I", "B"];
+    const nodeIDs = Object.keys(NODES);
     
-    destinations.forEach((dest, idx) => {
+    for (let idx = 0; idx < 3; idx++) {
+        if (Object.keys(localVehicles).length >= 250) break;
         const id = `f_${fleetID}_${idx}`;
-        const origin = "E"; // Kolonaki depot
+        const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        while (dest === origin) {
+            dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        }
 
         localVehicles[id] = {
             id: id,
@@ -666,13 +705,22 @@ function spawnFleet() {
                 fleet_id: fleetID
             }
         }));
-    });
+    }
+
+    triggerIoTReRoute();
 }
 
 function spawnEmergency() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
     const id = "e_" + Math.random().toString(36).substr(2, 6);
-    const origin = "F";
-    const dest = "H";
+    const nodeIDs = Object.keys(NODES);
+    const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    while (dest === origin) {
+        dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    }
 
     localVehicles[id] = {
         id: id,
@@ -713,15 +761,24 @@ function spawnEmergency() {
             fleet_id: ""
         }
     }));
+
+    triggerIoTReRoute();
 }
 
 function handleRouteResponse(resp) {
     const v = localVehicles[resp.vehicle_id];
     if (!v) return;
 
-    v.path = resp.path.edges;
-    v.pathIndex = 0;
-    v.progress = 0;
+    if (v.pendingReroute) {
+        v.pendingReroute = false;
+        const currentEdgeId = v.path[v.pathIndex];
+        v.path = [currentEdgeId, ...resp.path.edges];
+        v.pathIndex = 0;
+    } else {
+        v.path = resp.path.edges;
+        v.pathIndex = 0;
+        v.progress = 0;
+    }
 
     // Display Karma flow points
     if (resp.flow_points_earned > 0) {
@@ -731,6 +788,47 @@ function handleRouteResponse(resp) {
     }
 
     calculateAvgTime();
+}
+
+function triggerIoTReRoute(force = false) {
+    if (!force) {
+        if (typeof iotToggle !== 'undefined' && iotToggle && !iotToggle.checked) return;
+    }
+
+    let needsReroute = force;
+    if (!needsReroute) {
+        EDGES.forEach(edge => {
+            const load = currentEdgeLoads[edge.id] || 0;
+            if (edge.cap > 0 && load / edge.cap >= 0.8) {
+                needsReroute = true;
+            }
+        });
+    }
+
+    if (needsReroute) {
+        Object.keys(localVehicles).forEach(id => {
+            const v = localVehicles[id];
+            if ((v.type === 0 || v.type === 1) && v.path && v.pathIndex < v.path.length) {
+                const currentEdgeId = v.path[v.pathIndex];
+                const edge = EDGES.find(e => e.id === currentEdgeId);
+                if (edge) {
+                    v.pendingReroute = true;
+                    socket.send(JSON.stringify({
+                        type: "route_request",
+                        payload: {
+                            vehicle_id: v.id,
+                            origin: edge.to,
+                            destination: v.destination,
+                            type: v.type,
+                            selfish: v.selfish,
+                            emergency: false,
+                            fleet_id: v.fleet_id || ""
+                        }
+                    }));
+                }
+            }
+        });
+    }
 }
 
 function showFloatingPointsText(pts) {
@@ -763,6 +861,22 @@ function calculateAvgTime() {
 }
 
 function clearSimulation() {
+    // Tell backend to remove all vehicles
+    Object.keys(markers).forEach(id => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            const pos = markers[id].getLngLat();
+            socket.send(JSON.stringify({
+                type: "update_position",
+                payload: {
+                    vehicle_id: id,
+                    lat: pos.lat,
+                    lng: pos.lng,
+                    current_edge: "finished"
+                }
+            }));
+        }
+    });
+
     localVehicles = {};
     Object.keys(markers).forEach(id => {
         markers[id].remove();
@@ -774,6 +888,7 @@ function clearSimulation() {
     statAvgTime.textContent = "0.0s";
     statCongestionPct.textContent = "0%";
     statCongestionFill.style.width = "0%";
+    followedVehicleId = null;
     updateMapEdgeLoads([]);
     updateActiveVehiclesList();
 }
@@ -781,10 +896,9 @@ function clearSimulation() {
 // Auto-Spawning Control Loop
 function startAutoSpawn() {
     if (autoSpawnInterval) clearInterval(autoSpawnInterval);
-    // Spawn 5 civilians immediately
-    spawnMultipleCivilians(5);
+    spawnMultipleCiviliansAndFleets(3);
     autoSpawnInterval = setInterval(() => {
-        spawnMultipleCivilians(5);
+        spawnMultipleCiviliansAndFleets(3);
     }, 3000);
 }
 
@@ -795,9 +909,10 @@ function stopAutoSpawn() {
     }
 }
 
-function spawnMultipleCivilians(count) {
+function spawnMultipleCiviliansAndFleets(count) {
     for (let i = 0; i < count; i++) {
-        spawnCivilian();
+        if (Math.random() > 0.2) spawnCivilian(); // 80% chance civilian
+        else spawnFleet();                        // 20% chance fleet van
     }
 }
 
@@ -843,6 +958,10 @@ function getRealisticTime(v) {
             const load = currentEdgeLoads[edgeId] || 0;
             const loadFactor = load / edgeObj.cap;
             speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
+        }
+        
+        if (currentAdoptionRate > 0) {
+            speed *= (1.0 + (currentAdoptionRate / 100.0));
         }
         
         totalTime += distanceTraversed / speed;
@@ -899,8 +1018,15 @@ function updateActiveVehiclesList() {
 
 // Client-Side Telemetry Simulation Loop
 function startSimulationLoop() {
-    setInterval(() => {
+    let lastTime = performance.now();
+
+    function animate(currentTime) {
+        requestAnimationFrame(animate);
+
         if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+        const deltaTime = currentTime - lastTime;
+        lastTime = currentTime;
 
         Object.keys(localVehicles).forEach(id => {
             const v = localVehicles[id];
@@ -921,11 +1047,15 @@ function startSimulationLoop() {
                 speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
             }
             
+            if (currentAdoptionRate > 0) {
+                speed *= (1.0 + (currentAdoptionRate / 100.0));
+            }
+            
             const edgeDistance = getEdgeDistance(currentEdgeId);
             let speedStep = 0.08; // fallback
             if (edgeDistance > 0) {
-                // 150ms tick rate means dt = 0.15s
-                speedStep = (speed * 0.15) / edgeDistance;
+                const dtSeconds = deltaTime / 1000.0;
+                speedStep = (speed * dtSeconds) / edgeDistance;
             }
             
             v.progress += speedStep;
@@ -942,9 +1072,22 @@ function startSimulationLoop() {
                             vehicle_id: v.id,
                             lat: NODES[v.destination].coords[1],
                             lng: NODES[v.destination].coords[0],
-                            current_edge: ""
+                            current_edge: "finished"
                         }
                     }));
+                    
+                    if (v.id === followedVehicleId) {
+                        followedVehicleId = null;
+                        if (map) {
+                            map.easeTo({
+                                center: [23.7310, 37.9760],
+                                zoom: 14.2,
+                                pitch: 50,
+                                bearing: -10,
+                                duration: 1000
+                            });
+                        }
+                    }
                     delete localVehicles[v.id];
                     return;
                 }
@@ -971,10 +1114,27 @@ function startSimulationLoop() {
                     current_edge: edge.id
                 }
             }));
+
+            // Dynamic 3D Camera to follow selected vehicle
+            if (followedVehicleId === v.id && map) {
+                const edgeBearing = getBearing(fromNode.coords, toNode.coords);
+                const timeFactor = (performance.now() / 1500);
+                const dynamicPitch = 60 + Math.sin(timeFactor) * 15;
+                map.jumpTo({
+                    center: [lng, lat],
+                    zoom: 16.5,
+                    pitch: dynamicPitch,
+                    bearing: edgeBearing
+                });
+            }
         });
 
-        // Update the active vehicles list panel on every tick
-        updateActiveVehiclesList();
+        // Update the active vehicles list panel periodically (every ~500ms) to avoid DOM thrashing
+        if (currentTime - (window.lastListUpdate || 0) > 500) {
+            updateActiveVehiclesList();
+            window.lastListUpdate = currentTime;
+        }
+    }
 
-    }, 150); // 150ms tick rate
+    requestAnimationFrame(animate);
 }

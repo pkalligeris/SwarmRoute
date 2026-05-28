@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/pkalligeris/SwarmRoute/internal/orchestrator"
 	"github.com/pkalligeris/SwarmRoute/internal/vehicle"
 	"github.com/pkalligeris/SwarmRoute/internal/websocket"
+	"github.com/pkalligeris/SwarmRoute/pkg/types"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -74,12 +76,20 @@ func main() {
 				// Synchronize active edge loads from Redis to Graph in-memory
 				edgeIDs := graphEngine.GetEdgeIDs()
 
+				var wg sync.WaitGroup
 				for _, id := range edgeIDs {
-					vehicles, err := vehicleManager.GetVehiclesOnEdge(broadcastCtx, id)
-					if err == nil {
-						_ = graphEngine.SetEdgeLoad(id, len(vehicles))
-					}
+					wg.Add(1)
+					go func(edgeID types.EdgeID) {
+						defer wg.Done()
+						edgeCtx, cancel := context.WithTimeout(broadcastCtx, 50*time.Millisecond)
+						defer cancel()
+						vehicles, err := vehicleManager.GetVehiclesOnEdge(edgeCtx, edgeID)
+						if err == nil {
+							_ = graphEngine.SetEdgeLoad(edgeID, len(vehicles))
+						}
+					}(id)
 				}
+				wg.Wait()
 
 				if err := wsHandler.BroadcastTelemetry(broadcastCtx); err != nil {
 					log.Printf("Error broadcasting telemetry: %v", err)

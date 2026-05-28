@@ -133,14 +133,29 @@ func (h *WSHandler) BroadcastTelemetry(ctx context.Context) error {
 		return err
 	}
 
-	positions := make([]types.VehiclePosition, len(vehicles))
-	for i, v := range vehicles {
-		positions[i] = types.VehiclePosition{
-			ID:   v.ID,
-			Lat:  v.Lat,
-			Lng:  v.Lng,
-			Type: v.Type,
+	// Use a custom struct to ensure CurrentEdge is included in the JSON if needed,
+	// and completely filter out any finished vehicles from the telemetry stream.
+	type broadcastPos struct {
+		ID          types.VehicleID   `json:"id"`
+		Lat         float64           `json:"lat"`
+		Lng         float64           `json:"lng"`
+		Type        types.VehicleType `json:"type"`
+		CurrentEdge types.EdgeID      `json:"current_edge"`
+	}
+
+	var positions []broadcastPos
+	for _, v := range vehicles {
+		if v.CurrentEdge == "finished" {
+			continue
 		}
+
+		positions = append(positions, broadcastPos{
+			ID:          v.ID,
+			Lat:         v.Lat,
+			Lng:         v.Lng,
+			Type:        v.Type,
+			CurrentEdge: v.CurrentEdge,
+		})
 	}
 
 	msg := types.WebSocketMessage{

@@ -33,8 +33,7 @@ const EDGES = [
     { id: "B-H", from: "B", to: "H", cap: 20 },
     { id: "H-B", from: "H", to: "B", cap: 20 },
     { id: "A-E", from: "A", to: "E", cap: 10 },
-    { id: "E-A", From: "E", to: "A", cap: 10 },
-    { id: "E-F", from: "E", to: "F", cap: 10 },
+    { id: "E-A", from: "E", to: "F", cap: 10 },
     { id: "F-E", from: "F", to: "E", cap: 10 },
     { id: "A-F", from: "A", to: "F", cap: 15 },
     { id: "F-A", from: "F", to: "A", cap: 15 },
@@ -52,47 +51,15 @@ let localVehicles = {}; // vehicle_id -> vehicle simulation state
 let currentEdgeLoads = {}; // edge_id -> vehicle count
 let mapboxToken = localStorage.getItem("mapbox_token") || "";
 let totalKarma = 0;
-let isUserNavigating = false;
-let lastSpokenInstruction = "";
-
-// Street name mapping dictionary for turn-by-turn guidance
-const STREET_NAMES = {
-    "A-D": "Panepistimiou St",
-    "D-A": "Panepistimiou St",
-    "D-B": "Aiolou St",
-    "B-D": "Aiolou St",
-    "B-C": "Athinas St",
-    "C-B": "Athinas St",
-    "A-C": "Ermou St",
-    "C-A": "Ermou St",
-    "A-G": "Filellinon St",
-    "G-A": "Filellinon St",
-    "G-I": "Dionysiou Areopagitou St",
-    "I-G": "Dionysiou Areopagitou St",
-    "I-C": "Apostolou Pavlou St",
-    "C-I": "Apostolou Pavlou St",
-    "C-H": "Ermou St (West)",
-    "H-C": "Ermou St (West)",
-    "B-H": "Pireos St",
-    "H-B": "Pireos St",
-    "A-E": "Vasilissis Sofias Ave",
-    "E-A": "Vasilissis Sofias Ave",
-    "E-F": "Koumpari St",
-    "F-E": "Koumpari St",
-    "A-F": "Vasilissis Sofias Ave (East)",
-    "F-A": "Vasilissis Sofias Ave (East)",
-    "I-J": "Akamantos St",
-    "J-I": "Akamantos St",
-    "J-H": "Thessalonikis St",
-    "H-J": "Thessalonikis St"
-};
+let currentAdoptionRate = 0;
+let autoSpawnInterval = null;
+let followedVehicleId = null;
 
 // UI Elements
 const adoptionSlider = document.getElementById("adoption-rate");
 const adoptionVal = document.getElementById("adoption-rate-val");
 const iotToggle = document.getElementById("iot-toggle");
-const btnSpawnCivilian = document.getElementById("btn-spawn-civilian");
-const btnSpawnFleet = document.getElementById("btn-spawn-fleet");
+const autospawnToggle = document.getElementById("autospawn-toggle");
 const btnSpawnEmergency = document.getElementById("btn-spawn-emergency");
 const btnClearSim = document.getElementById("btn-clear-simulation");
 
@@ -107,13 +74,6 @@ const btnSaveToken = document.getElementById("btn-save-token");
 const modalToken = document.getElementById("modal-token-required");
 const modalTokenInput = document.getElementById("modal-token-input");
 const btnModalSave = document.getElementById("btn-modal-save");
-
-const btnStartNav = document.getElementById("btn-start-nav");
-const btnStopNav = document.getElementById("btn-stop-nav");
-const navOrigin = document.getElementById("nav-origin");
-const navDest = document.getElementById("nav-destination");
-const navSelfish = document.getElementById("nav-selfish");
-const navEmergency = document.getElementById("nav-emergency");
 
 // Initialize application
 document.addEventListener("DOMContentLoaded", () => {
@@ -131,52 +91,70 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function setupEventListeners() {
     // Save token actions
-    btnSaveToken.addEventListener("click", () => {
-        const tok = tokenInput.value.trim();
-        if (tok) {
-            localStorage.setItem("mapbox_token", tok);
-            location.reload();
-        }
-    });
-
-    btnModalSave.addEventListener("click", () => {
-        const tok = modalTokenInput.value.trim();
-        if (tok) {
-            localStorage.setItem("mapbox_token", tok);
-            modalToken.classList.add("hidden");
-            location.reload();
-        }
-    });
-
-    // Slider listener
-    adoptionSlider.addEventListener("input", (e) => {
-        adoptionVal.textContent = e.target.value + "%";
-    });
-
-    // Spawn triggers
-    btnSpawnCivilian.addEventListener("click", () => spawnCivilian());
-    btnSpawnFleet.addEventListener("click", () => spawnFleet());
-    btnSpawnEmergency.addEventListener("click", () => spawnEmergency());
-    btnClearSim.addEventListener("click", () => clearSimulation());
-
-    // Navigation triggers
-    if (btnStartNav) {
-        btnStartNav.addEventListener("click", () => {
-            const origin = navOrigin.value;
-            const dest = navDest.value;
-            if (origin === dest) {
-                alert("Start intersection and destination must be different!");
-                return;
+    if (btnSaveToken) {
+        btnSaveToken.addEventListener("click", () => {
+            const tok = tokenInput.value.trim();
+            if (tok) {
+                localStorage.setItem("mapbox_token", tok);
+                location.reload();
             }
-            const isSelfish = navSelfish.checked;
-            const isEmergency = navEmergency.checked;
-            startUserNavigation(origin, dest, isSelfish, isEmergency);
         });
     }
 
-    if (btnStopNav) {
-        btnStopNav.addEventListener("click", () => {
-            stopUserNavigation();
+    if (btnModalSave) {
+        btnModalSave.addEventListener("click", () => {
+            const tok = modalTokenInput.value.trim();
+            if (tok) {
+                localStorage.setItem("mapbox_token", tok);
+                modalToken.classList.add("hidden");
+                location.reload();
+            }
+        });
+    }
+
+    // Slider listener
+    if (adoptionSlider && adoptionSlider.parentElement) {
+        const btnContainer = document.createElement('div');
+        btnContainer.className = 'adoption-buttons';
+        btnContainer.style.display = 'flex';
+        btnContainer.style.gap = '10px';
+        btnContainer.style.margin = '10px 0';
+        [25, 50, 75, 100].forEach(rate => {
+            const btn = document.createElement('button');
+            btn.textContent = rate + '%';
+            btn.className = 'btn btn-outline';
+            btn.style.flex = '1';
+            btn.style.padding = '10px';
+            btn.style.fontWeight = 'bold';
+            btn.style.fontSize = '1.1em';
+            btn.onclick = () => {
+                currentAdoptionRate = rate;
+                if (adoptionVal) adoptionVal.textContent = rate + '%';
+                
+                Array.from(btnContainer.children).forEach(b => {
+                    b.className = 'btn btn-outline';
+                });
+                btn.className = 'btn btn-primary';
+                
+                triggerIoTReRoute(true); // Force reroute on adoption change
+            };
+            btnContainer.appendChild(btn);
+        });
+        adoptionSlider.parentElement.replaceChild(btnContainer, adoptionSlider);
+    }
+
+    // Spawn triggers
+    if (btnSpawnEmergency) btnSpawnEmergency.addEventListener("click", () => spawnEmergency());
+    if (btnClearSim) btnClearSim.addEventListener("click", () => clearSimulation());
+
+    // Auto-Spawn Toggle
+    if (autospawnToggle) {
+        autospawnToggle.addEventListener("change", (e) => {
+            if (e.target.checked) {
+                startAutoSpawn();
+            } else {
+                stopAutoSpawn();
+            }
         });
     }
 }
@@ -316,12 +294,39 @@ function drawStreetNetwork() {
     });
 }
 
+function clearSimulation() {
+    // Tell backend to remove all vehicles
+    Object.keys(localVehicles).forEach(id => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                type: "update_position",
+                payload: {
+                    vehicle_id: id,
+                    lat: localVehicles[id].lat,
+                    lng: localVehicles[id].lng,
+                    current_edge: "finished"
+                }
+            }));
+        }
+    });
+
+    localVehicles = {};
+    Object.keys(markers).forEach(id => {
+        markers[id].remove();
+        delete markers[id];
+    });
+    totalKarma = 0;
+    followedVehicleId = null;
+    updateMapEdgeLoads([]);
+}
+
 // WebSocket Connection
 function connectWebSocket() {
     socket = new WebSocket("ws://localhost:8080/ws");
 
     socket.onopen = () => {
         console.log("Connected to SwarmRoute WebSocket Server");
+        startAutoSpawn(); // Automatically start spawning randomly assigned vehicles
     };
 
     socket.onmessage = (event) => {
@@ -356,6 +361,7 @@ function updateVehicleMarkers(positions) {
     let emergencyCount = 0;
 
     positions.forEach(pos => {
+        if (pos.current_edge === "finished") return;
         activeIds.add(pos.id);
         
         let marker = markers[pos.id];
@@ -365,10 +371,7 @@ function updateVehicleMarkers(positions) {
             el.className = 'vehicle-marker';
             
             // Set styles based on vehicle types
-            if (pos.id === "user_nav_vehicle") {
-                el.classList.add('user-marker');
-                el.innerHTML = '<i class="fa-solid fa-location-arrow"></i>';
-            } else if (pos.type === 2) { // Emergency
+            if (pos.type === 2) { // Emergency
                 el.classList.add('emergency-marker');
                 el.innerHTML = '<i class="fa-solid fa-truck-medical"></i>';
                 emergencyCount++;
@@ -391,6 +394,25 @@ function updateVehicleMarkers(positions) {
             marker = new mapboxgl.Marker(el)
                 .setLngLat([pos.lng, pos.lat])
                 .addTo(map);
+
+            // Click to follow camera
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (followedVehicleId === pos.id) {
+                    followedVehicleId = null;
+                    if (map) {
+                        map.easeTo({
+                            center: [23.7310, 37.9760],
+                            zoom: 14.2,
+                            pitch: 50,
+                            bearing: -10,
+                            duration: 1000
+                        });
+                    }
+                } else {
+                    followedVehicleId = pos.id;
+                }
+            });
                 
             markers[pos.id] = marker;
         } else {
@@ -483,6 +505,9 @@ function updateMapEdgeLoads(positions) {
 
 // Spawning Vehicles Logic
 function spawnCivilian() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
     const id = "c_" + Math.random().toString(36).substr(2, 6);
     const nodeIDs = Object.keys(NODES);
     const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
@@ -491,8 +516,7 @@ function spawnCivilian() {
         dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
     }
 
-    const adoptionRate = parseInt(adoptionSlider.value);
-    const isSelfish = Math.random() * 100 > adoptionRate;
+    const isSelfish = Math.random() * 100 > currentAdoptionRate;
 
     const req = {
         vehicle_id: id,
@@ -539,14 +563,20 @@ function spawnCivilian() {
 }
 
 function spawnFleet() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
     const fleetID = "fleet_athens_" + Math.random().toString(36).substr(2, 4);
+    const nodeIDs = Object.keys(NODES);
     
-    // Spawn 3 delivery vans starting from Kolonaki (E) to random destinations
-    const destinations = ["H", "I", "B"];
-    
-    destinations.forEach((dest, idx) => {
+    for (let idx = 0; idx < 3; idx++) {
+        if (Object.keys(localVehicles).length >= 250) break;
         const id = `f_${fleetID}_${idx}`;
-        const origin = "E"; // Kolonaki depot
+        const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        while (dest === origin) {
+            dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+        }
 
         localVehicles[id] = {
             id: id,
@@ -588,14 +618,20 @@ function spawnFleet() {
                 fleet_id: fleetID
             }
         }));
-    });
+    }
 }
 
 function spawnEmergency() {
+    if (Object.keys(localVehicles).length >= 250) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
     const id = "e_" + Math.random().toString(36).substr(2, 6);
-    // Emergency vehicle goes from Evangelismos (F) to Kerameikos (H)
-    const origin = "F";
-    const dest = "H";
+    const nodeIDs = Object.keys(NODES);
+    const origin = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    let dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    while (dest === origin) {
+        dest = nodeIDs[Math.floor(Math.random() * nodeIDs.length)];
+    }
 
     localVehicles[id] = {
         id: id,
@@ -635,15 +671,24 @@ function spawnEmergency() {
             fleet_id: ""
         }
     }));
+
+    triggerIoTReRoute(true); // Force reroute on emergency spawn
 }
 
 function handleRouteResponse(resp) {
     const v = localVehicles[resp.vehicle_id];
     if (!v) return;
 
-    v.path = resp.path.edges;
-    v.pathIndex = 0;
-    v.progress = 0;
+    if (v.pendingReroute) {
+        v.pendingReroute = false;
+        const currentEdgeId = v.path[v.pathIndex];
+        v.path = [currentEdgeId, ...resp.path.edges];
+        v.pathIndex = 0;
+    } else {
+        v.path = resp.path.edges;
+        v.pathIndex = 0;
+        v.progress = 0;
+    }
 
     // Display Karma flow points
     if (resp.flow_points_earned > 0) {
@@ -667,6 +712,47 @@ function showFloatingPointsText(pts) {
     setTimeout(() => {
         label.remove();
     }, 2500);
+}
+
+function triggerIoTReRoute(force = false) {
+    if (!force) {
+        if (typeof iotToggle !== 'undefined' && iotToggle && !iotToggle.checked) return;
+    }
+
+    let needsReroute = force;
+    if (!needsReroute) {
+        EDGES.forEach(edge => {
+            const load = currentEdgeLoads[edge.id] || 0;
+            if (edge.cap > 0 && load / edge.cap >= 0.8) {
+                needsReroute = true;
+            }
+        });
+    }
+
+    if (needsReroute) {
+        Object.keys(localVehicles).forEach(id => {
+            const v = localVehicles[id];
+            if ((v.type === 0 || v.type === 1) && v.path && v.pathIndex < v.path.length) {
+                const currentEdgeId = v.path[v.pathIndex];
+                const edge = EDGES.find(e => e.id === currentEdgeId);
+                if (edge) {
+                    v.pendingReroute = true;
+                    socket.send(JSON.stringify({
+                        type: "route_request",
+                        payload: {
+                            vehicle_id: v.id,
+                            origin: edge.to,
+                            destination: v.destination,
+                            type: v.type,
+                            selfish: v.selfish,
+                            emergency: false,
+                            fleet_id: v.fleet_id || ""
+                        }
+                    }));
+                }
+            }
+        });
+    }
 }
 
 // Helper to calculate total distance of an edge using straight-line distance
@@ -705,6 +791,10 @@ function getRealisticTime(v) {
             speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
         }
         
+        if (currentAdoptionRate > 0) {
+            speed *= (1.0 + (currentAdoptionRate / 100.0));
+        }
+        
         totalTime += distanceTraversed / speed;
     }
     
@@ -730,6 +820,22 @@ function calculateAvgTime() {
 }
 
 function clearSimulation() {
+    // Tell backend to remove all vehicles
+    Object.keys(markers).forEach(id => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            const pos = markers[id].getLngLat();
+            socket.send(JSON.stringify({
+                type: "update_position",
+                payload: {
+                    vehicle_id: id,
+                    lat: pos.lat,
+                    lng: pos.lng,
+                    current_edge: "finished"
+                }
+            }));
+        }
+    });
+
     // Clear all client side models
     localVehicles = {};
     Object.keys(markers).forEach(id => {
@@ -742,13 +848,44 @@ function clearSimulation() {
     statAvgTime.textContent = "0.0s";
     statCongestionPct.textContent = "0%";
     statCongestionFill.style.width = "0%";
+    followedVehicleId = null;
     updateMapEdgeLoads([]);
+}
+
+// Auto-Spawning Control Loop
+function startAutoSpawn() {
+    if (autoSpawnInterval) clearInterval(autoSpawnInterval);
+    spawnMultipleCiviliansAndFleets(3);
+    autoSpawnInterval = setInterval(() => {
+        spawnMultipleCiviliansAndFleets(3);
+    }, 3000);
+}
+
+function stopAutoSpawn() {
+    if (autoSpawnInterval) {
+        clearInterval(autoSpawnInterval);
+        autoSpawnInterval = null;
+    }
+}
+
+function spawnMultipleCiviliansAndFleets(count) {
+    for (let i = 0; i < count; i++) {
+        if (Math.random() > 0.2) spawnCivilian(); // 80% chance civilian
+        else spawnFleet();                        // 20% chance fleet van
+    }
 }
 
 // Client-Side Telemetry Simulation Loop
 function startSimulationLoop() {
-    setInterval(() => {
+    let lastTime = performance.now();
+    
+    function animate(currentTime) {
+        requestAnimationFrame(animate); // Queue the next frame immediately
+        
         if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+        const deltaTime = currentTime - lastTime;
+        lastTime = currentTime;
 
         Object.keys(localVehicles).forEach(id => {
             const v = localVehicles[id];
@@ -769,11 +906,16 @@ function startSimulationLoop() {
                 speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
             }
             
+            if (currentAdoptionRate > 0) {
+                speed *= (1.0 + (currentAdoptionRate / 100.0));
+            }
+            
             const edgeDistance = getEdgeDistance(currentEdgeId);
             let speedStep = 0.08; // fallback
             if (edgeDistance > 0) {
-                // 150ms tick rate means dt = 0.15s
-                speedStep = (speed * 0.15) / edgeDistance;
+                // Calculate movement based on dynamic delta time (seconds)
+                const dtSeconds = deltaTime / 1000.0;
+                speedStep = (speed * dtSeconds) / edgeDistance;
             }
 
             v.progress += speedStep;
@@ -791,15 +933,22 @@ function startSimulationLoop() {
                             vehicle_id: v.id,
                             lat: NODES[v.destination].coords[1],
                             lng: NODES[v.destination].coords[0],
-                            current_edge: ""
+                            current_edge: "finished"
                         }
                     }));
-                    if (v.id === "user_nav_vehicle") {
-                        speakInstruction(`Arrived at destination, ${NODES[v.destination].name}`);
-                        stopUserNavigation();
-                    } else {
-                        delete localVehicles[v.id];
+                    if (v.id === followedVehicleId) {
+                        followedVehicleId = null;
+                        if (map) {
+                            map.easeTo({
+                                center: [23.7310, 37.9760],
+                                zoom: 14.2,
+                                pitch: 50,
+                                bearing: -10,
+                                duration: 1000
+                            });
+                        }
                     }
+                    delete localVehicles[v.id];
                     return;
                 }
             }
@@ -825,311 +974,21 @@ function startSimulationLoop() {
                 }
             }));
 
-            // If this is the user navigation vehicle and GPS mode is active, follow it
-            if (id === "user_nav_vehicle" && isUserNavigating) {
+            // Dynamic 3D Camera to follow selected vehicle
+            if (followedVehicleId === v.id && map) {
                 const edgeBearing = getBearing(fromNode.coords, toNode.coords);
-                if (map) {
-                    map.easeTo({
-                        center: [lng, lat],
-                        zoom: 17,
-                        pitch: 60,
-                        bearing: edgeBearing,
-                        duration: 150,
-                        easing: (t) => t
-                    });
-                }
-                updateNavigationHUD(v);
+                const timeFactor = (performance.now() / 1500);
+                const dynamicPitch = 60 + Math.sin(timeFactor) * 15;
+                
+                map.jumpTo({
+                    center: [lng, lat],
+                    zoom: 16.5,
+                    pitch: dynamicPitch,
+                    bearing: edgeBearing
+                });
             }
         });
-    }, 150); // 150ms tick rate
-}
-
-// --- Turn-by-Turn Navigation & Voice Announcement Logic ---
-
-// Calculate distance (meters) between two [Lng, Lat] coordinates (Haversine Formula)
-function getDistance(coords1, coords2) {
-    const lon1 = coords1[0];
-    const lat1 = coords1[1];
-    const lon2 = coords2[0];
-    const lat2 = coords2[1];
-    
-    const R = 6371000; // Earth radius in meters
-    const phi1 = lat1 * Math.PI / 180;
-    const phi2 = lat2 * Math.PI / 180;
-    const deltaPhi = (lat2 - lat1) * Math.PI / 180;
-    const deltaLambda = (lon2 - lon1) * Math.PI / 180;
-    
-    const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
-              Math.cos(phi1) * Math.cos(phi2) *
-              Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-}
-
-// Calculate bearing (degrees) between two [Lng, Lat] coordinates
-function getBearing(coords1, coords2) {
-    const lng1 = coords1[0];
-    const lat1 = coords1[1];
-    const lng2 = coords2[0];
-    const lat2 = coords2[1];
-    
-    const dLng = lng2 - lng1;
-    const dLat = lat2 - lat1;
-    
-    // Mapbox bearing is -180 to 180 (North is 0, East is 90)
-    return Math.atan2(dLng, dLat) * 180 / Math.PI;
-}
-
-// Angle-based direction instruction logic
-function getTurnInstruction(currentEdgeId, nextEdgeId) {
-    if (!currentEdgeId) return null;
-    
-    const currEdge = EDGES.find(e => e.id === currentEdgeId);
-    if (!currEdge) return null;
-    
-    const currFromNode = NODES[currEdge.from];
-    const currToNode = NODES[currEdge.to];
-    const currBearing = getBearing(currFromNode.coords, currToNode.coords);
-    
-    if (!nextEdgeId) {
-        return {
-            text: `Arrive at your destination, ${currToNode.name}`,
-            iconClass: "fa-solid fa-location-dot",
-            bearing: currBearing
-        };
     }
     
-    const nextEdge = EDGES.find(e => e.id === nextEdgeId);
-    if (!nextEdge) return null;
-    
-    const nextFromNode = NODES[nextEdge.from];
-    const nextToNode = NODES[nextEdge.to];
-    const nextBearing = getBearing(nextFromNode.coords, nextToNode.coords);
-    
-    let diff = nextBearing - currBearing;
-    while (diff > 180) diff -= 360;
-    while (diff < -180) diff += 360;
-    
-    const nextStreetName = STREET_NAMES[nextEdgeId] || "Athens Street";
-    let direction = "";
-    let iconClass = "";
-    
-    if (diff >= -35 && diff <= 35) {
-        direction = `Continue straight onto ${nextStreetName}`;
-        iconClass = "fa-solid fa-arrow-up";
-    } else if (diff > 35 && diff <= 145) {
-        direction = `Turn right onto ${nextStreetName}`;
-        iconClass = "fa-solid fa-arrow-turn-up-right";
-    } else if (diff < -35 && diff >= -145) {
-        direction = `Turn left onto ${nextStreetName}`;
-        iconClass = "fa-solid fa-arrow-turn-up-left";
-    } else {
-        direction = `Make a U-turn onto ${nextStreetName}`;
-        iconClass = "fa-solid fa-arrow-rotate-left";
-    }
-    
-    return {
-        text: direction,
-        iconClass: iconClass,
-        bearing: currBearing
-    };
-}
-
-// Update the navigation HUD UI overlay
-function updateNavigationHUD(v) {
-    if (!v || v.path.length === 0) return;
-    
-    const currentEdgeId = v.path[v.pathIndex];
-    const nextEdgeId = v.path[v.pathIndex + 1];
-    
-    const instructionObj = getTurnInstruction(currentEdgeId, nextEdgeId);
-    if (!instructionObj) return;
-    
-    const instructionEl = document.getElementById("hud-instruction");
-    const iconEl = document.getElementById("hud-turn-icon");
-    
-    if (instructionEl) instructionEl.textContent = instructionObj.text;
-    if (iconEl) iconEl.className = instructionObj.iconClass;
-    
-    // Voice guidance announcement
-    speakInstruction(instructionObj.text);
-    
-    // Calculate total remaining distance in meters
-    let totalDistRemaining = 0;
-    
-    // Current edge segment remaining distance
-    const currEdge = EDGES.find(e => e.id === currentEdgeId);
-    if (currEdge) {
-        const fromNode = NODES[currEdge.from];
-        const toNode = NODES[currEdge.to];
-        const edgeLen = getDistance(fromNode.coords, toNode.coords);
-        totalDistRemaining += edgeLen * (1 - v.progress);
-    }
-    
-    // Remaining subsequent edge segments
-    for (let i = v.pathIndex + 1; i < v.path.length; i++) {
-        const edgeId = v.path[i];
-        const edge = EDGES.find(e => e.id === edgeId);
-        if (edge) {
-            const fromNode = NODES[edge.from];
-            const toNode = NODES[edge.to];
-            totalDistRemaining += getDistance(fromNode.coords, toNode.coords);
-        }
-    }
-    
-    const distanceEl = document.getElementById("hud-distance");
-    const etaEl = document.getElementById("hud-eta");
-    
-    if (distanceEl) {
-        distanceEl.innerHTML = `<i class="fa-solid fa-route"></i> ${Math.round(totalDistRemaining)} m`;
-    }
-    
-    if (etaEl) {
-        // ETA: 12 m/s for civilian, 24 m/s for emergency vehicle
-        const speed = v.type === 2 ? 24 : 12;
-        const etaSeconds = Math.round(totalDistRemaining / speed);
-        etaEl.innerHTML = `<i class="fa-solid fa-clock"></i> ${etaSeconds} s remaining`;
-    }
-}
-
-// Speak turn instruction out loud using Web Speech API
-function speakInstruction(text) {
-    if (!text || text === lastSpokenInstruction) return;
-    lastSpokenInstruction = text;
-    if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        // Optimize voice parameters for clear speech
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-        window.speechSynthesis.speak(utterance);
-    }
-}
-
-// Start first-person GPS navigation tracking mode
-function startUserNavigation(origin, dest, isSelfish, isEmergency) {
-    // Clear any previous user navigation instance
-    if (localVehicles["user_nav_vehicle"]) {
-        if (markers["user_nav_vehicle"]) {
-            markers["user_nav_vehicle"].remove();
-            delete markers["user_nav_vehicle"];
-        }
-        delete localVehicles["user_nav_vehicle"];
-    }
-    
-    lastSpokenInstruction = "";
-    
-    // UI state updates
-    if (btnStartNav) btnStartNav.disabled = true;
-    if (btnStopNav) btnStopNav.disabled = false;
-    
-    isUserNavigating = true;
-    
-    const hud = document.getElementById("navigation-hud");
-    if (hud) {
-        hud.classList.remove("hidden");
-        if (isEmergency) {
-            hud.classList.add("emergency");
-        } else {
-            hud.classList.remove("emergency");
-        }
-        
-        // Reset HUD texts
-        const instructionEl = document.getElementById("hud-instruction");
-        const distanceEl = document.getElementById("hud-distance");
-        const etaEl = document.getElementById("hud-eta");
-        if (instructionEl) instructionEl.textContent = "Calculating route...";
-        if (distanceEl) distanceEl.innerHTML = `<i class="fa-solid fa-route"></i> -- m`;
-        if (etaEl) etaEl.innerHTML = `<i class="fa-solid fa-clock"></i> -- s remaining`;
-    }
-    
-    // Initialize navigation vehicle
-    localVehicles["user_nav_vehicle"] = {
-        id: "user_nav_vehicle",
-        origin: origin,
-        destination: dest,
-        type: isEmergency ? 2 : 0,
-        selfish: isSelfish,
-        path: [],
-        pathIndex: 0,
-        progress: 0,
-        lat: NODES[origin].coords[1],
-        lng: NODES[origin].coords[0]
-    };
-    
-    // Register on the server first
-    socket.send(JSON.stringify({
-        type: "register_vehicle",
-        payload: {
-            id: "user_nav_vehicle",
-            type: isEmergency ? 2 : 0,
-            origin: origin,
-            destination: dest,
-            current_edge: "",
-            lat: NODES[origin].coords[1],
-            lng: NODES[origin].coords[0]
-        }
-    }));
-    
-    // Request routing path from backend
-    socket.send(JSON.stringify({
-        type: "route_request",
-        payload: {
-            vehicle_id: "user_nav_vehicle",
-            origin: origin,
-            destination: dest,
-            type: isEmergency ? 2 : 0,
-            selfish: isSelfish,
-            emergency: isEmergency,
-            fleet_id: ""
-        }
-    }));
-}
-
-// Stop user navigation tracking mode and restore default camera
-function stopUserNavigation() {
-    isUserNavigating = false;
-    
-    if (localVehicles["user_nav_vehicle"]) {
-        socket.send(JSON.stringify({
-            type: "update_position",
-            payload: {
-                vehicle_id: "user_nav_vehicle",
-                lat: localVehicles["user_nav_vehicle"].lat,
-                lng: localVehicles["user_nav_vehicle"].lng,
-                current_edge: ""
-            }
-        }));
-        delete localVehicles["user_nav_vehicle"];
-    }
-    
-    if (markers["user_nav_vehicle"]) {
-        markers["user_nav_vehicle"].remove();
-        delete markers["user_nav_vehicle"];
-    }
-    
-    // UI state updates
-    if (btnStartNav) btnStartNav.disabled = false;
-    if (btnStopNav) btnStopNav.disabled = true;
-    
-    const hud = document.getElementById("navigation-hud");
-    if (hud) {
-        hud.classList.add("hidden");
-        hud.classList.remove("emergency");
-    }
-    
-    if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-    }
-    
-    // Return to default Athens coordinates & styling
-    if (map) {
-        map.easeTo({
-            center: [23.7310, 37.9760],
-            zoom: 14.2,
-            pitch: 50,
-            bearing: -10,
-            duration: 1000
-        });
-    }
+    requestAnimationFrame(animate);
 }
