@@ -911,10 +911,23 @@ function startSimulationLoop() {
             const edge = EDGES.find(e => e.id === currentEdgeId);
             if (!edge) return;
 
-            // Speed step: Emergency vehicles are faster
-            let speedStep = 0.08; 
-            if (v.type === 2) speedStep = 0.16;
-
+            // Speed: Emergency vehicles move faster. Detour speed is constant.
+            let speed = (v.type === 2) ? 20.0 : 13.89; // 20 m/s or 13.89 m/s
+            
+            const edgeObj = EDGES.find(e => e.id === currentEdgeId);
+            if (edgeObj && edgeObj.cap > 0) {
+                const load = currentEdgeLoads[currentEdgeId] || 0;
+                const loadFactor = load / edgeObj.cap;
+                speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
+            }
+            
+            const edgeDistance = getEdgeDistance(currentEdgeId);
+            let speedStep = 0.08; // fallback
+            if (edgeDistance > 0) {
+                // 150ms tick rate means dt = 0.15s
+                speedStep = (speed * 0.15) / edgeDistance;
+            }
+            
             v.progress += speedStep;
 
             if (v.progress >= 1.0) {

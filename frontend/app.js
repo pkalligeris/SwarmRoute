@@ -49,6 +49,7 @@ let map = null;
 let socket = null;
 let markers = {}; // vehicle_id -> mapbox marker
 let localVehicles = {}; // vehicle_id -> vehicle simulation state
+let currentEdgeLoads = {}; // edge_id -> vehicle count
 let mapboxToken = localStorage.getItem("mapbox_token") || "";
 let totalKarma = 0;
 let isUserNavigating = false;
@@ -418,16 +419,16 @@ function updateMapEdgeLoads(positions) {
     if (!map || !map.getSource('streets')) return;
 
     // Reset loads
-    const edgeLoads = {};
-    EDGES.forEach(e => { edgeLoads[e.id] = 0; });
+    currentEdgeLoads = {};
+    EDGES.forEach(e => { currentEdgeLoads[e.id] = 0; });
 
     positions.forEach(pos => {
         // Find which edge this vehicle is currently on
         const vState = localVehicles[pos.id];
         if (vState && vState.path && vState.pathIndex < vState.path.length) {
             const edgeId = vState.path[vState.pathIndex];
-            if (edgeLoads[edgeId] !== undefined) {
-                edgeLoads[edgeId]++;
+            if (currentEdgeLoads[edgeId] !== undefined) {
+                currentEdgeLoads[edgeId]++;
             }
         }
     });
@@ -436,7 +437,7 @@ function updateMapEdgeLoads(positions) {
     const features = EDGES.map(edge => {
         const fromNode = NODES[edge.from];
         const toNode = NODES[edge.to];
-        const load = edgeLoads[edge.id] || 0;
+        const load = currentEdgeLoads[edge.id] || 0;
         return {
             "type": "Feature",
             "properties": { "id": edge.id, "load": load },
@@ -456,7 +457,7 @@ function updateMapEdgeLoads(positions) {
     let totalLoad = 0;
     let totalCap = 0;
     EDGES.forEach(edge => {
-        const load = edgeLoads[edge.id] || 0;
+        const load = currentEdgeLoads[edge.id] || 0;
         totalLoad += load;
         totalCap += edge.cap;
     });
@@ -668,14 +669,55 @@ function showFloatingPointsText(pts) {
     }, 2500);
 }
 
+// Helper to calculate total distance of an edge using straight-line distance
+function getEdgeDistance(edgeId) {
+    const edge = EDGES.find(e => e.id === edgeId);
+    if (edge) {
+        const fromNode = NODES[edge.from];
+        const toNode = NODES[edge.to];
+        if (fromNode && toNode) {
+            return getDistance(fromNode.coords, toNode.coords);
+        }
+    }
+    return 0;
+}
+
+// Calculate realistic travel time dynamically based on fully/partially traversed edges
+function getRealisticTime(v) {
+    if (!v || !v.path || v.path.length === 0) return 0;
+    let totalTime = 0;
+    
+    // Loop through all traversed edges in the path
+    for (let i = 0; i <= v.pathIndex && i < v.path.length; i++) {
+        const edgeId = v.path[i];
+        const edgeDistance = getEdgeDistance(edgeId);
+        if (edgeDistance <= 0) continue;
+        
+        const portion = (i === v.pathIndex) ? v.progress : 1.0;
+        const distanceTraversed = portion * edgeDistance;
+        
+        let speed = (v.type === 2) ? 20.0 : 13.89; // 20 m/s for emergency, 13.89 m/s for civilian/fleet
+        
+        const edgeObj = EDGES.find(e => e.id === edgeId);
+        if (edgeObj && edgeObj.cap > 0) {
+            const load = currentEdgeLoads[edgeId] || 0;
+            const loadFactor = load / edgeObj.cap;
+            speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
+        }
+        
+        totalTime += distanceTraversed / speed;
+    }
+    
+    return Math.round(totalTime);
+}
+
 function calculateAvgTime() {
     let sumTime = 0;
     let count = 0;
     
     Object.values(localVehicles).forEach(v => {
         if (v.path.length > 0) {
-            // Mock estimated times
-            sumTime += v.path.length * 45; // average 45s per segment
+            sumTime += getRealisticTime(v);
             count++;
         }
     });
@@ -717,9 +759,22 @@ function startSimulationLoop() {
             const edge = EDGES.find(e => e.id === currentEdgeId);
             if (!edge) return;
 
-            // Speed: Emergency vehicles move twice as fast. Detour speed is constant.
-            let speedStep = 0.08; 
-            if (v.type === 2) speedStep = 0.16; // Ambulance speed
+            // Speed: Emergency vehicles move faster. Detour speed is constant.
+            let speed = (v.type === 2) ? 20.0 : 13.89; // 20 m/s or 13.89 m/s
+            
+            const edgeObj = EDGES.find(e => e.id === currentEdgeId);
+            if (edgeObj && edgeObj.cap > 0) {
+                const load = currentEdgeLoads[currentEdgeId] || 0;
+                const loadFactor = load / edgeObj.cap;
+                speed = speed / (1.0 + 0.15 * Math.pow(loadFactor, 4));
+            }
+            
+            const edgeDistance = getEdgeDistance(currentEdgeId);
+            let speedStep = 0.08; // fallback
+            if (edgeDistance > 0) {
+                // 150ms tick rate means dt = 0.15s
+                speedStep = (speed * 0.15) / edgeDistance;
+            }
 
             v.progress += speedStep;
 
