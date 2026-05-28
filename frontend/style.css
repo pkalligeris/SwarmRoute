@@ -158,10 +158,10 @@ body, html {
 /* Cards & Section Containers */
 .card {
     border-radius: 14px;
-    padding: 18px;
+    /* padding: 18px; */
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    /* gap: 14px; */
 }
 
 .card h2 {
@@ -359,7 +359,7 @@ input:checked + .slider-round:before {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    color: var(--text-primary);
+    color: #000;
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     font-family: var(--font-sans);
 }
@@ -909,7 +909,7 @@ input:checked + .slider-round:before {
 .vehicles-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    /* gap: 8px; */
 }
 
 .no-vehicles {
