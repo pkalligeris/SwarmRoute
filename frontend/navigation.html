@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SwarmRoute - GPS Navigation System</title>
+    
+    <!-- Modern Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;550;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Mapbox GL JS -->
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Premium Navigation Bar -->
+        <nav class="premium-navbar glass">
+            <div class="nav-brand">
+                <i class="fa-solid fa-square-rss logo-icon"></i>
+                <span class="logo-text">Swarm<span>Route</span></span>
+            </div>
+            <div class="nav-links">
+                <a href="index.html" class="nav-link" id="nav-sim"><i class="fa-solid fa-gauge-high"></i> Simulation Dashboard</a>
+                <a href="navigation.html" class="nav-link active" id="nav-gps"><i class="fa-solid fa-compass"></i> GPS Navigation</a>
+            </div>
+        </nav>
+
+        <!-- Main Map Container -->
+        <div id="map-container">
+            <div id="map"></div>
+            <!-- Floating Navigation HUD -->
+            <div id="navigation-hud" class="glass hidden">
+                <div class="hud-icon-container">
+                    <i id="hud-turn-icon" class="fa-solid fa-arrow-up"></i>
+                </div>
+                <div class="hud-text-container">
+                    <div id="hud-instruction" class="hud-instruction">Continue straight onto Panepistimiou St</div>
+                    <div class="hud-meta">
+                        <span id="hud-distance"><i class="fa-solid fa-route"></i> -- m</span>
+                        <span class="hud-separator">&bull;</span>
+                        <span id="hud-eta"><i class="fa-solid fa-clock"></i> -- s remaining</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar Dashboard -->
+        <aside id="sidebar" class="glass">
+            <!-- Configuration Card -->
+            <section class="card glass-inner">
+                <h2><i class="fa-solid fa-gears"></i> Configurations</h2>
+                
+                <div class="form-group">
+                    <label for="mapbox-token">Mapbox API Token</label>
+                    <div class="input-action">
+                        <input type="password" id="mapbox-token" placeholder="Paste your mapbox token here..." autocomplete="off">
+                        <button id="btn-save-token" title="Save Token"><i class="fa-solid fa-floppy-disk"></i></button>
+                    </div>
+                    <span class="hint">Tokens are stored securely in local browser storage.</span>
+                </div>
+            </section>
+
+            <!-- Personal Navigation Mode Card -->
+            <section class="card glass-inner">
+                <h2><i class="fa-solid fa-compass"></i> Personal Navigation</h2>
+                
+                <div class="form-group">
+                    <label for="nav-origin">Start Intersection</label>
+                    <select id="nav-origin" class="nav-select">
+                        <option value="A">A - Syntagma</option>
+                        <option value="B">B - Omonia</option>
+                        <option value="C">C - Monastiraki</option>
+                        <option value="D">D - Panepistimio</option>
+                        <option value="E">E - Kolonaki</option>
+                        <option value="F">F - Evangelismos</option>
+                        <option value="G">G - Plaka</option>
+                        <option value="H">H - Kerameikos</option>
+                        <option value="I">I - Thissio/Acropolis</option>
+                        <option value="J">J - Petralona</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="nav-destination">Destination Intersection</label>
+                    <select id="nav-destination" class="nav-select">
+                        <option value="B">B - Omonia</option>
+                        <option value="A">A - Syntagma</option>
+                        <option value="C">C - Monastiraki</option>
+                        <option value="D">D - Panepistimio</option>
+                        <option value="E">E - Kolonaki</option>
+                        <option value="F">F - Evangelismos</option>
+                        <option value="G">G - Plaka</option>
+                        <option value="H">H - Kerameikos</option>
+                        <option value="I">I - Thissio/Acropolis</option>
+                        <option value="J">J - Petralona</option>
+                    </select>
+                </div>
+
+                <div class="form-group toggle-group">
+                    <div class="toggle-label-container">
+                        <label for="nav-selfish">Selfish Routing</label>
+                        <span class="hint">Ignore dynamic traffic loads.</span>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="nav-selfish">
+                        <span class="slider-round"></span>
+                    </label>
+                </div>
+
+                <div class="form-group toggle-group">
+                    <div class="toggle-label-container">
+                        <label for="nav-emergency">Request Emergency Priority</label>
+                        <span class="hint">Use emergency priority routing.</span>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="nav-emergency">
+                        <span class="slider-round"></span>
+                    </label>
+                </div>
+
+                <div class="control-grid">
+                    <button id="btn-start-nav" class="btn primary-gradient">
+                        <i class="fa-solid fa-location-arrow"></i> Start Navigation
+                    </button>
+                    <button id="btn-stop-nav" class="btn danger" disabled>
+                        <i class="fa-solid fa-circle-stop"></i> Stop Navigation
+                    </button>
+                </div>
+            </section>
+
+            <footer class="footer">
+                <p>SwarmRoute &copy; 2026. Athens Grid.</p>
+            </footer>
+        </aside>
+    </div>
+
+    <!-- Instructions Overlay Modal -->
+    <div id="modal-token-required" class="modal-overlay hidden">
+        <div class="modal glass">
+            <h2><i class="fa-solid fa-triangle-exclamation text-yellow"></i> Mapbox Token Required</h2>
+            <p>To render the 3D Athens navigation map, please provide your Mapbox API token. You can generate a free token at <a href="https://account.mapbox.com/" target="_blank">mapbox.com</a>.</p>
+            <div class="form-group">
+                <input type="text" id="modal-token-input" placeholder="pk.eyJ1Ijo..." autocomplete="off">
+            </div>
+            <div class="modal-actions">
+                <button id="btn-modal-save" class="btn primary-gradient">Launch Navigation</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Script -->
+    <script src="navigation.js"></script>
+</body>
+</html>

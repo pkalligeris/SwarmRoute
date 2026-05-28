@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SwarmRoute - System-Optimal Traffic Simulation</title>
+    
+    <!-- Modern Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;550;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Mapbox GL JS -->
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Premium Navigation Bar -->
+        <nav class="premium-navbar glass">
+            <div class="nav-brand">
+                <i class="fa-solid fa-square-rss logo-icon"></i>
+                <span class="logo-text">Swarm<span>Route</span></span>
+            </div>
+            <div class="nav-links">
+                <a href="index.html" class="nav-link active" id="nav-sim"><i class="fa-solid fa-gauge-high"></i> Simulation Dashboard</a>
+                <a href="navigation.html" class="nav-link" id="nav-gps"><i class="fa-solid fa-compass"></i> GPS Navigation</a>
+            </div>
+        </nav>
+
+        <!-- Main Map Container -->
+        <div id="map-container">
+            <div id="map"></div>
+            <!-- Floating Navigation HUD -->
+            <div id="navigation-hud" class="glass hidden">
+                <div class="hud-icon-container">
+                    <i id="hud-turn-icon" class="fa-solid fa-arrow-up"></i>
+                </div>
+                <div class="hud-text-container">
+                    <div id="hud-instruction" class="hud-instruction">Continue straight onto Panepistimiou St</div>
+                    <div class="hud-meta">
+                        <span id="hud-distance"><i class="fa-solid fa-route"></i> -- m</span>
+                        <span class="hud-separator">&bull;</span>
+                        <span id="hud-eta"><i class="fa-solid fa-clock"></i> -- s remaining</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar Dashboard -->
+        <aside id="sidebar" class="glass">
+            <!-- Configuration Card -->
+            <section class="card glass-inner">
+                <h2><i class="fa-solid fa-gears"></i> Configurations</h2>
+                
+                <div class="form-group">
+                    <label for="mapbox-token">Mapbox API Token</label>
+                    <div class="input-action">
+                        <input type="password" id="mapbox-token" placeholder="Paste your mapbox token here..." autocomplete="off">
+                        <button id="btn-save-token" title="Save Token"><i class="fa-solid fa-floppy-disk"></i></button>
+                    </div>
+                    <span class="hint">Tokens are stored securely in local browser storage.</span>
+                </div>
+
+                <div class="form-group">
+                    <div class="slider-header">
+                        <label for="adoption-rate">Adoption Rate</label>
+                        <span id="adoption-rate-val">50%</span>
+                    </div>
+                    <input type="range" id="adoption-rate" min="0" max="100" value="50">
+                    <span class="hint">Percentage of vehicles guided by SwarmRoute AI.</span>
+                </div>
+
+                <div class="form-group toggle-group">
+                    <div class="toggle-label-container">
+                        <label for="iot-toggle">IoT Smart Sensors</label>
+                        <span class="hint">Preemptively reroute based on sensor loads.</span>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="iot-toggle" checked>
+                        <span class="slider-round"></span>
+                    </label>
+                </div>
+
+                <div class="form-group toggle-group">
+                    <div class="toggle-label-container">
+                        <label for="autospawn-toggle">Auto-Spawn Vehicles</label>
+                        <span class="hint">Spawn 5 vehicles every 3s to block grid.</span>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="autospawn-toggle">
+                        <span class="slider-round"></span>
+                    </label>
+                </div>
+            </section>
+
+            <!-- Control Card -->
+            <section class="card glass-inner">
+                <h2><i class="fa-solid fa-gamepad"></i> Control Panel</h2>
+                <div class="control-grid">
+                    <button id="btn-spawn-civilian" class="btn primary-gradient">
+                        <i class="fa-solid fa-car"></i> Spawn Civilian
+                    </button>
+                    <button id="btn-spawn-fleet" class="btn fleet-gradient">
+                        <i class="fa-solid fa-truck-ramp-box"></i> Spawn Fleet
+                    </button>
+                    <button id="btn-spawn-emergency" class="btn emergency-gradient">
+                        <i class="fa-solid fa-truck-medical"></i> Spawn Ambulance
+                    </button>
+                    <button id="btn-clear-simulation" class="btn danger">
+                        <i class="fa-solid fa-trash-can"></i> Clear Grid
+                    </button>
+                </div>
+            </section>
+
+            <!-- Active Vehicles Panel -->
+            <section class="card glass-inner scrollable-panel">
+                <h2><i class="fa-solid fa-list-ol"></i> Active Vehicles</h2>
+                <div id="active-vehicles-list" class="vehicles-list">
+                    <div class="no-vehicles">No active vehicles</div>
+                </div>
+            </section>
+
+            <!-- Telemetry Stats Card -->
+            <section class="card glass-inner">
+                <h2><i class="fa-solid fa-chart-line"></i> System Telemetry</h2>
+                
+                <div class="stat-row">
+                    <span class="stat-label">Active Vehicles</span>
+                    <span id="stat-active-count" class="stat-value">0</span>
+                </div>
+                
+                <div class="stat-row">
+                    <span class="stat-label">Avg Travel Time</span>
+                    <span id="stat-avg-time" class="stat-value">0.0s</span>
+                </div>
+
+                <div class="stat-row flex-column">
+                    <div class="stat-header">
+                        <span class="stat-label">Grid Congestion</span>
+                        <span id="stat-congestion-pct" class="stat-value text-green">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="stat-congestion-fill" class="progress-fill green" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="stat-row">
+                    <span class="stat-label">Total Karma (Flow Points)</span>
+                    <span id="stat-flow-points" class="stat-value text-blue">0</span>
+                </div>
+            </section>
+
+            <footer class="footer">
+                <p>SwarmRoute &copy; 2026. Athens Grid.</p>
+            </footer>
+        </aside>
+    </div>
+
+    <!-- Instructions Overlay Modal -->
+    <div id="modal-token-required" class="modal-overlay hidden">
+        <div class="modal glass">
+            <h2><i class="fa-solid fa-triangle-exclamation text-yellow"></i> Mapbox Token Required</h2>
+            <p>To render the 3D Athens simulation map, please provide your Mapbox API token. You can generate a free token at <a href="https://account.mapbox.com/" target="_blank">mapbox.com</a>.</p>
+            <div class="form-group">
+                <input type="text" id="modal-token-input" placeholder="pk.eyJ1Ijo..." autocomplete="off">
+            </div>
+            <div class="modal-actions">
+                <button id="btn-modal-save" class="btn primary-gradient">Launch Simulation</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Script -->
+    <script src="simulation.js"></script>
+</body>
+</html>
