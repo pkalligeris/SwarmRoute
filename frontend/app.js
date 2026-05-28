@@ -808,6 +808,33 @@ function updateVehicleMarkers(positions) {
             // Move marker coordinates
             marker.setLngLat([pos.lng, pos.lat]);
         }
+
+        // Add "Rerouted" badge indicator
+        const vState = localVehicles[pos.id];
+        if (vState && vState.hasBeenRerouted) {
+            const el = marker.getElement();
+            if (!el.classList.contains('is-rerouted')) {
+                el.classList.add('is-rerouted');
+                const badge = document.createElement('div');
+                badge.className = 'reroute-badge';
+                badge.textContent = 'Rerouted';
+                badge.style.position = 'absolute';
+                badge.style.top = '-20px';
+                badge.style.left = '50%';
+                badge.style.transform = 'translateX(-50%)';
+                badge.style.background = '#a855f7';
+                badge.style.color = '#fff';
+                badge.style.fontSize = '10px';
+                badge.style.padding = '2px 4px';
+                badge.style.borderRadius = '4px';
+                badge.style.fontWeight = 'bold';
+                badge.style.pointerEvents = 'none';
+                badge.style.whiteSpace = 'nowrap';
+                badge.style.boxShadow = '0 0 5px #a855f7';
+                badge.style.zIndex = '10';
+                el.appendChild(badge);
+            }
+        }
     });
 
     // Remove expired markers
@@ -1080,6 +1107,7 @@ function handleRouteResponse(resp) {
 
     if (v.pendingReroute) {
         v.pendingReroute = false;
+        v.hasBeenRerouted = true;
         const currentEdgeId = v.path[v.pathIndex];
         v.path = [currentEdgeId, ...resp.path.edges];
         v.pathIndex = 0;
@@ -1209,26 +1237,6 @@ function interpolatePosition(coords, progress) {
         currentLength += lengths[i];
     }
     return coords[coords.length - 1];
-}
-
-function getDistance(coords1, coords2) {
-    const R = 6371000; 
-    const lat1 = coords1[1] * Math.PI / 180;
-    const lat2 = coords2[1] * Math.PI / 180;
-    const dLat = (coords2[1] - coords1[1]) * Math.PI / 180;
-    const dLng = (coords2[0] - coords1[0]) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng/2) * Math.sin(dLng/2);
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
-
-function getBearing(coords1, coords2) {
-    const lng1 = coords1[0];
-    const lat1 = coords1[1];
-    const lng2 = coords2[0];
-    const lat2 = coords2[1];
-    const dLng = lng2 - lng1;
-    const dLat = lat2 - lat1;
-    return Math.atan2(dLng, dLat) * 180 / Math.PI;
 }
 
 // Helper to calculate total distance of an edge using straight-line distance

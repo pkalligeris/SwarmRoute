@@ -618,6 +618,33 @@ function updateVehicleMarkers(positions) {
             // Move marker coordinates
             marker.setLngLat([pos.lng, pos.lat]);
         }
+
+        // Add "Rerouted" badge indicator
+        const vState = localVehicles[pos.id];
+        if (vState && vState.hasBeenRerouted) {
+            const el = marker.getElement();
+            if (!el.classList.contains('is-rerouted')) {
+                el.classList.add('is-rerouted');
+                const badge = document.createElement('div');
+                badge.className = 'reroute-badge';
+                badge.textContent = 'Rerouted';
+                badge.style.position = 'absolute';
+                badge.style.top = '-20px';
+                badge.style.left = '50%';
+                badge.style.transform = 'translateX(-50%)';
+                badge.style.background = '#a855f7';
+                badge.style.color = '#fff';
+                badge.style.fontSize = '10px';
+                badge.style.padding = '2px 4px';
+                badge.style.borderRadius = '4px';
+                badge.style.fontWeight = 'bold';
+                badge.style.pointerEvents = 'none';
+                badge.style.whiteSpace = 'nowrap';
+                badge.style.boxShadow = '0 0 5px #a855f7';
+                badge.style.zIndex = '10';
+                el.appendChild(badge);
+            }
+        }
     });
 
     // Remove expired markers
@@ -895,6 +922,7 @@ function handleRouteResponse(resp) {
 
     if (v.pendingReroute) {
         v.pendingReroute = false;
+        v.hasBeenRerouted = true;
         const currentEdgeId = v.path[v.pathIndex];
         v.path = [currentEdgeId, ...resp.path.edges];
         v.pathIndex = 0;
